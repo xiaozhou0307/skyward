@@ -6,6 +6,11 @@ English | [简体中文](README.zh-CN.md)
 
 Skyward is a recovery written in Rust, from scratch.
 
+> **Turner branch:** This branch adds support for the REDMI K Pad (`turner`).
+> The image has not yet been tried on hardware; see
+> [`devices/turner/README.md`](devices/turner/README.md) for its current state
+> and the provenance of the device files.
+
 <p align="center">
   <img src="assets/home.png" width="30%" alt="Home">
   <img src="assets/settings-dark.png" width="30%" alt="Settings in dark mode">
@@ -122,6 +127,7 @@ not been verified.
 | 🚧 REDMI K90 Ultra | `warsaw` | OS3.0.309.0.WHPCNXM (Android 16) |
 | 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM (Android 17) |
 | 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM (Android 17) |
+| 🚧 REDMI K Pad | `turner` | OS4.0.3.0 (Android 17) |
 
 ## Installing Skyward
 

@@ -66,5 +66,7 @@ registration and actual decryption remain unverified for the new build.
   It is a separate kernel module, distributed here as its own file under its own
   licence (GPL-2.0-only, which is not the GPL-3.0 of this project — the two run
   as separate programs through the kernel, they are not linked together).
-  Whoever publishes this tree must publish or point at the corresponding
-  KallRecon source as well.
+  The upstream project is
+  [Dere3046/KallRecon](https://github.com/Dere3046/KallRecon). The binary above
+  contains the local fix described here, so anyone redistributing it must also
+  make the corresponding modified source available under GPL-2.0-only.
