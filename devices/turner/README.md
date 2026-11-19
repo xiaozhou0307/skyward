@@ -3,6 +3,12 @@
 Everything here is what the turner build needs beside the Rust source. Each file
 says where it came from, so that a published tree keeps its provenance straight.
 
+## Validation
+
+The recovery built from this tree has been tested on a REDMI K Pad running
+OS4.0.3.0, and its functions were reported working. Recheck the device-specific
+paths below after changing the kernel module, key services or WLAN stack.
+
 ## Taken from the working recovery image the user supplied
 
 These are copied verbatim from `skyward_turner_4.0.3_bug已修.img`
@@ -27,8 +33,7 @@ taken from the phone's own `/system` or `/vendor` partitions: neither carries a
 
 The three key-service configuration blocks retain the reference's
 recovery-first Binder library ordering, root credentials, and LD_PRELOAD for the
-shim. Display/touch configuration is intentionally not copied. On-device KeyMint
-registration and actual decryption remain unverified for the new build.
+shim. Display/touch configuration is intentionally not copied.
 
 ## Written for this port
 

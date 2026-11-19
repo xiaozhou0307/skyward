@@ -6,8 +6,8 @@
 
 Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 
-> **turner 分支：** 本分支增加 REDMI K Pad（`turner`）支持。镜像尚未在真机上验证；
-> 当前状态和设备文件的来源见 [`devices/turner/README.md`](devices/turner/README.md)。
+> **turner 分支：** 本分支增加 REDMI K Pad（`turner`）支持。该 recovery 已在实机测试；
+> 验证状态和设备文件的来源见 [`devices/turner/README.md`](devices/turner/README.md)。
 
 <p align="center">
   <img src="assets/home.png" width="30%" alt="首页">
@@ -90,6 +90,7 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 | --- | --- | --- |
 | 小米 17 Ultra | `nezha` | OS4.0.4.0.XPACNXM（Android 17） |
 | 小米 13 Ultra | `ishtar` | OS3.0.308.0.WMACNXM（Android 16） |
+| REDMI K Pad | `turner` | OS4.0.3.0（Android 17） |
 
 ### 🚧 施工中
 
@@ -116,7 +117,6 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 | 🚧 REDMI K90 Ultra | `warsaw` | OS3.0.309.0.WHPCNXM（Android 16） |
 | 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM（Android 17） |
 | 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM（Android 17） |
-| 🚧 REDMI K Pad | `turner` | OS4.0.3.0（Android 17） |
 
 ## 安装 Skyward
 
