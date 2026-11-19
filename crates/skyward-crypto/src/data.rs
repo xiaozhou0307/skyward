@@ -96,13 +96,127 @@ fn open(service: &KeyMint) -> Result<Opened> {
 /// and the device the filesystem is read and written through.
 fn map(service: &KeyMint) -> Result<(Vec<Entry>, PathBuf)> {
     let entries = skyward_block::fstab::read(MOUNT)?;
-    let entry = entries.first().with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
-    let encryption = Encryption::of(entry)?;
+    anyhow::ensure!(!entries.is_empty(), "the phone's own table says nothing about {MOUNT}");
+    if let Some(entry) = explicit_metadata_entry(&entries) {
+        // A table that names options this build cannot read is no reason to
+        // stop: the partition itself says what it holds, and the tries below
+        // ask it.
+        match Encryption::of(entry) {
+            Ok(encryption) => {
+                let device = skyward_block::fstab::device(entry)?;
+                let key = storage_key(service, entry, &encryption)?;
+                let sectors = skyward_block::size_bytes(&device)? / 512;
+                let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
+                return Ok((entries, mapped));
+            }
+            Err(e) => note(&format!(
+                "the metadata options {entry:?} give cannot be read ({e:#}); what the partition holds is asked instead"
+            ))?,
+        }
+    }
+    // The table may omit metadata options even though userdata is encrypted.
+    // Only a filesystem read through a temporary, read-only mapping can
+    // distinguish the two key forms. Never fsck or mount a guessed mapping.
+    anyhow::ensure!(!mount::is_mount_point(Path::new(MOUNT))?, "the data partition is mounted");
+    anyhow::ensure!(dm::status(MAPPED)?.is_none(), "the data partition is already mapped");
+    note("metadata encryption options absent; the entries of /data are")?;
+    for entry in &entries {
+        note(&format!("{} {} {:?}", entry.device, entry.filesystem, entry.extras))?;
+    }
+    // Where the table names no directory, the one Android's vold keeps its
+    // metadata keys in is where this platform's phones have theirs.
+    let entry = entries
+        .iter()
+        .find(|e| e.extra("keydirectory").is_some_and(|d| !d.is_empty()))
+        .unwrap_or(&entries[0]);
     let device = skyward_block::fstab::device(entry)?;
-    let key = storage_key(service, entry, &encryption)?;
     let sectors = skyward_block::size_bytes(&device)? / 512;
-    let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
-    Ok((entries, mapped))
+    for encryption in metadata_candidates() {
+        let key = match storage_key(service, entry, &encryption) {
+            Ok(key) => key,
+            Err(_) => {
+                note(&format!("metadata candidate wrapped={}: key could not be opened", encryption.wrapped))?;
+                continue;
+            }
+        };
+        let mapped = match dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], true) {
+            Ok(mapped) => mapped,
+            Err(_) => {
+                // create can fail after installing its target. We entered
+                // with no mapping, so only our own possible target is removed.
+                if dm::status(MAPPED)?.is_some() {
+                    dm::remove(MAPPED).context("remove failed metadata probe mapping")?;
+                }
+                note(&format!("metadata candidate wrapped={}: mapping could not be created", encryption.wrapped))?;
+                continue;
+            }
+        };
+        let holds = skyward_block::probe::filesystem(&mapped);
+        // Removal is mandatory even if probing failed; do not try another
+        // candidate or write through a mapping whose cleanup failed.
+        dm::remove(MAPPED).context("remove read-only metadata probe mapping")?;
+        let accepted = holds.as_ref().ok().and_then(|s| s.as_deref())
+            .is_some_and(|fs| accepts_metadata_filesystem(&entries, fs));
+        if !accepted {
+            note(&format!("metadata candidate wrapped={}: no expected data filesystem", encryption.wrapped))?;
+            continue;
+        }
+        let filesystem = holds?.expect("accepted filesystem");
+        let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
+        note(&format!("/data is open under {} with wrapped={}, and holds {filesystem}", encryption.cipher, encryption.wrapped))?;
+        return Ok((entries, mapped));
+    }
+    anyhow::bail!("no metadata key form opened a filesystem named by the phone's data table")
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    fn entry(filesystem: &str, extras: &str) -> Entry {
+        Entry {
+            device: "/dev/block/by-name/userdata".into(),
+            mount_point: MOUNT.into(),
+            filesystem: filesystem.into(),
+            options: vec![],
+            extras: extras.split(',').map(str::to_string).collect(),
+        }
+    }
+
+    #[test]
+    fn an_explicit_metadata_entry_is_found_after_a_generic_one() {
+        let entries = vec![entry("f2fs", "keydirectory=/metadata/vold/metadata_encryption"),
+            entry("ext4", "metadata_encryption=aes-256-xts:wrappedkey_v0")];
+        assert_eq!(explicit_metadata_entry(&entries), Some(&entries[1]));
+        assert!(explicit_metadata_entry(&entries[..1]).is_none());
+        let empty = [entry("f2fs", "metadata_encryption=")];
+        assert!(explicit_metadata_entry(&empty).is_some(), "an explicitly empty default is still authoritative");
+    }
+
+    #[test]
+    fn probes_hardware_wrapped_then_plain_and_accepts_only_declared_data_filesystems() {
+        let candidates = metadata_candidates();
+        assert!(candidates[0].wrapped);
+        assert!(!candidates[1].wrapped);
+        assert!(candidates.iter().all(|e| e.cipher == "aes-xts-plain64"));
+        let entries = [entry("f2fs", "keydirectory=/metadata/vold/metadata_encryption")];
+        assert!(accepts_metadata_filesystem(&entries, "f2fs"));
+        assert!(!accepts_metadata_filesystem(&entries, "ext4"));
+        assert!(!accepts_metadata_filesystem(&[entry("erofs", "")], "erofs"));
+        assert!(!accepts_metadata_filesystem(&entries, ""));
+    }
+}
+
+fn explicit_metadata_entry(entries: &[Entry]) -> Option<&Entry> {
+    entries.iter().find(|e| e.extra("metadata_encryption").is_some())
+}
+
+fn metadata_candidates() -> [Encryption; 2] {
+    [true, false].map(|wrapped| Encryption { cipher: "aes-xts-plain64".into(), wrapped })
+}
+
+fn accepts_metadata_filesystem(entries: &[Entry], filesystem: &str) -> bool {
+    matches!(filesystem, "f2fs" | "ext4") && entries.iter().any(|e| e.filesystem == filesystem)
 }
 
 /// Map the data partition decrypted without mounting it, for its
@@ -525,4 +639,20 @@ fn secret_note(user: u32, synthetic_password: &[u8]) -> Result<Note> {
         Ok(token) => Note { token: Some(token), refused: None },
         Err(e) => Note { token: None, refused: Some(format!("{e:#}")) },
     })
+}
+
+/// Say something in the kernel's log, where a recovery keeps the only one
+/// it has: this crate has no logger of its own to reach it through.
+fn note(text: &str) -> Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        use std::io::Write;
+        if let Ok(mut log) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg")
+            && writeln!(log, "skyward: {text}").is_ok()
+        {
+            return Ok(());
+        }
+    }
+    eprintln!("skyward: {text}");
+    Ok(())
 }

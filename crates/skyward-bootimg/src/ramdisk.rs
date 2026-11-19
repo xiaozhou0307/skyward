@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use cpio::{NewcBuilder, NewcReader};
 use std::ffi::{CString, OsStr};
 use std::fs;
@@ -53,7 +53,9 @@ impl Ramdisk {
     /// boot images carry.
     pub fn decode(compressed: &[u8]) -> Result<Self> {
         let mut cpio = Vec::new();
-        lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut cpio).context("lz4 decode")?;
+        lz4_flex::frame::FrameDecoder::new(compressed)
+            .read_to_end(&mut cpio)
+            .context("lz4 decode")?;
         let mut entries = Vec::new();
         let mut rest = Cursor::new(cpio.as_slice());
         loop {
@@ -73,7 +75,8 @@ impl Ramdisk {
                 rdev: (e.rdev_major(), e.rdev_minor()),
                 data: Vec::with_capacity(e.file_size() as usize),
             };
-            r.read_to_end(&mut entry.data).with_context(|| format!("cpio data of {}", entry.name))?;
+            r.read_to_end(&mut entry.data)
+                .with_context(|| format!("cpio data of {}", entry.name))?;
             entries.push(entry);
             rest = r.finish().context("cpio entry end")?;
         }
@@ -91,7 +94,8 @@ impl Ramdisk {
     pub fn archive(&self) -> Result<Vec<u8>> {
         let mut cpio = Vec::new();
         for (ino, e) in self.entries.iter().enumerate() {
-            let size = u32::try_from(e.data.len()).with_context(|| format!("{} is too large", e.name))?;
+            let size =
+                u32::try_from(e.data.len()).with_context(|| format!("{} is too large", e.name))?;
             let mut w = NewcBuilder::new(&e.name)
                 .ino(300_000 + ino as u32)
                 .mode(e.mode)
@@ -165,6 +169,14 @@ impl Ramdisk {
         }
     }
 
+    pub fn remove_tree(&mut self, name: &str) -> Result<usize> {
+        let prefix = format!("{}/", name.trim_end_matches('/'));
+        let before = self.entries.len();
+        self.entries
+            .retain(|entry| entry.name != name && !entry.name.starts_with(&prefix));
+        Ok(before - self.entries.len())
+    }
+
     fn insert(&mut self, name: &str, mode: u32, data: Vec<u8>) -> Result<()> {
         if self.find(name).is_some() {
             bail!("{name} is already in the ramdisk");
@@ -179,7 +191,9 @@ impl Ramdisk {
             match self.find(&parent) {
                 Some(e) if e.is_dir() => {}
                 Some(_) => bail!("{parent} is not a directory"),
-                None => self.entries.push(root_entry(&parent, S_IFDIR | 0o755, Vec::new())),
+                None => self
+                    .entries
+                    .push(root_entry(&parent, S_IFDIR | 0o755, Vec::new())),
             }
         }
         self.entries.push(root_entry(name, mode, data));
@@ -189,7 +203,17 @@ impl Ramdisk {
 
 fn root_entry(name: &str, mode: u32, data: Vec<u8>) -> Entry {
     let nlink = if mode & S_IFMT == S_IFDIR { 2 } else { 1 };
-    Entry { name: name.to_string(), mode, uid: 0, gid: 0, mtime: 0, nlink, dev: (0, 0), rdev: (0, 0), data }
+    Entry {
+        name: name.to_string(),
+        mode,
+        uid: 0,
+        gid: 0,
+        mtime: 0,
+        nlink,
+        dev: (0, 0),
+        rdev: (0, 0),
+        data,
+    }
 }
 
 fn c_path(path: &Path) -> Result<CString> {
@@ -215,12 +239,22 @@ fn unpack(e: &Entry, path: &Path) -> Result<()> {
     };
     match kind {
         S_IFDIR if kept => {}
-        S_IFDIR => fs::DirBuilder::new().mode(mode).create(path).context("make the folder")?,
+        S_IFDIR => fs::DirBuilder::new()
+            .mode(mode)
+            .create(path)
+            .context("make the folder")?,
         S_IFREG => {
-            let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(path).context("make the file")?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(path)
+                .context("make the file")?;
             file.write_all(&e.data).context("write the file")?;
         }
-        S_IFLNK => std::os::unix::fs::symlink(OsStr::from_bytes(&e.data), path).context("make the link")?,
+        S_IFLNK => {
+            std::os::unix::fs::symlink(OsStr::from_bytes(&e.data), path).context("make the link")?
+        }
         S_IFCHR | S_IFBLK | S_IFIFO | S_IFSOCK => {
             let dev = libc::makedev(e.rdev.0 as _, e.rdev.1 as _);
             if unsafe { libc::mknod(c_path(path)?.as_ptr(), e.mode as libc::mode_t, dev) } != 0 {
@@ -244,9 +278,20 @@ fn unpack(e: &Entry, path: &Path) -> Result<()> {
 /// Give `path` itself, a link or not, `mtime` as the time it was last
 /// changed and read.
 fn set_time(path: &Path, mtime: u32) -> Result<()> {
-    let at = libc::timespec { tv_sec: mtime as libc::time_t, tv_nsec: 0 };
+    let at = libc::timespec {
+        tv_sec: mtime as libc::time_t,
+        tv_nsec: 0,
+    };
     let times = [at, at];
-    if unsafe { libc::utimensat(libc::AT_FDCWD, c_path(path)?.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+    if unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            c_path(path)?.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
         return Err(std::io::Error::last_os_error()).context("give it its time");
     }
     Ok(())
@@ -286,7 +331,10 @@ fn lz4_tool(input: &[u8]) -> Result<Vec<u8>> {
     let input = input.to_vec();
     let writer = std::thread::spawn(move || stdin.write_all(&input));
     let out = child.wait_with_output().context("lz4")?;
-    writer.join().expect("lz4 writer thread").context("feed lz4")?;
+    writer
+        .join()
+        .expect("lz4 writer thread")
+        .context("feed lz4")?;
     if !out.status.success() {
         bail!("lz4 exited with {}", out.status);
     }
@@ -299,8 +347,11 @@ mod tests {
 
     #[test]
     fn round_trip_keeps_metadata() {
-        let mut rd = Ramdisk { entries: Vec::new() };
-        rd.add("system/bin/recovery", 0o750, b"binary".to_vec()).unwrap();
+        let mut rd = Ramdisk {
+            entries: Vec::new(),
+        };
+        rd.add("system/bin/recovery", 0o750, b"binary".to_vec())
+            .unwrap();
         rd.entries.push(Entry {
             name: "dev/console".into(),
             mode: 0o020600,
@@ -314,16 +365,27 @@ mod tests {
         });
         let back = Ramdisk::decode(&rd.encode().unwrap()).unwrap();
         let names: Vec<&str> = back.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["system", "system/bin", "system/bin/recovery", "dev/console"]);
+        assert_eq!(
+            names,
+            ["system", "system/bin", "system/bin/recovery", "dev/console"]
+        );
         let bin = back.find("system/bin/recovery").unwrap();
-        assert_eq!((bin.mode, bin.data.as_slice()), (S_IFREG | 0o750, b"binary".as_slice()));
+        assert_eq!(
+            (bin.mode, bin.data.as_slice()),
+            (S_IFREG | 0o750, b"binary".as_slice())
+        );
         assert_eq!(back.find("dev/console").unwrap().rdev, (5, 1));
         assert!(rd.add("system/bin/recovery", 0o644, Vec::new()).is_err());
     }
 
     /// What the reference `lz4` tool unpacks `packed` to.
     fn unpacked_by_the_tool(packed: &[u8]) -> Vec<u8> {
-        let mut child = Command::new("lz4").args(["-d", "-c"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new("lz4")
+            .args(["-d", "-c"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         let mut stdin = child.stdin.take().unwrap();
         let input = packed.to_vec();
         let writer = std::thread::spawn(move || stdin.write_all(&input));
@@ -336,45 +398,92 @@ mod tests {
     #[test]
     fn a_legacy_stream_starts_with_its_magic_and_unpacks_whole() {
         // Past one block of 8 MiB, compressible in places.
-        let input: Vec<u8> = (0..20u32 << 20).map(|i| if i % 3 == 0 { (i / 7) as u8 } else { 0x5a }).collect();
+        let input: Vec<u8> = (0..20u32 << 20)
+            .map(|i| if i % 3 == 0 { (i / 7) as u8 } else { 0x5a })
+            .collect();
         let packed = lz4_legacy(&input);
         assert_eq!(packed[..4], [0x02, 0x21, 0x4c, 0x18]);
         assert!(packed.len() < input.len());
-        assert_eq!(unpacked_by_the_tool(&packed), input, "the reference tool reads it");
+        assert_eq!(
+            unpacked_by_the_tool(&packed),
+            input,
+            "the reference tool reads it"
+        );
         let mut back = Vec::new();
-        lz4_flex::frame::FrameDecoder::new(packed.as_slice()).read_to_end(&mut back).unwrap();
+        lz4_flex::frame::FrameDecoder::new(packed.as_slice())
+            .read_to_end(&mut back)
+            .unwrap();
         assert_eq!(back, input);
     }
 
     #[test]
     fn a_stream_after_the_vendor_ramdisk_is_read_on_into() {
-        let mut vendor = Ramdisk { entries: Vec::new() };
-        vendor.add("lib/modules/ufs_qcom.ko", 0o644, b"module".to_vec()).unwrap();
-        let mut ours = Ramdisk { entries: Vec::new() };
+        let mut vendor = Ramdisk {
+            entries: Vec::new(),
+        };
+        vendor
+            .add("lib/modules/ufs_qcom.ko", 0o644, b"module".to_vec())
+            .unwrap();
+        let mut ours = Ramdisk {
+            entries: Vec::new(),
+        };
         ours.add("init", 0o750, b"program".to_vec()).unwrap();
-        let joined = [vendor.encode().unwrap(), lz4_legacy(&ours.archive().unwrap())].concat();
-        assert_eq!(unpacked_by_the_tool(&joined), [vendor.archive().unwrap(), ours.archive().unwrap()].concat(), "both archives, one after the other");
+        let joined = [
+            vendor.encode().unwrap(),
+            lz4_legacy(&ours.archive().unwrap()),
+        ]
+        .concat();
+        assert_eq!(
+            unpacked_by_the_tool(&joined),
+            [vendor.archive().unwrap(), ours.archive().unwrap()].concat(),
+            "both archives, one after the other"
+        );
     }
 
     #[test]
     fn a_link_is_kept_as_a_link_to_its_target() {
-        let mut rd = Ramdisk { entries: Vec::new() };
-        rd.add("system/bin/recovery", 0o750, b"binary".to_vec()).unwrap();
+        let mut rd = Ramdisk {
+            entries: Vec::new(),
+        };
+        rd.add("system/bin/recovery", 0o750, b"binary".to_vec())
+            .unwrap();
         rd.link("system/bin/zstd", "recovery").unwrap();
         rd.link("sbin/sh", "/system/bin/sh").unwrap();
         let back = Ramdisk::decode(&rd.encode().unwrap()).unwrap();
         let zstd = back.find("system/bin/zstd").unwrap();
-        assert_eq!((zstd.mode, zstd.data.as_slice()), (S_IFLNK | LINK_MODE, b"recovery".as_slice()));
+        assert_eq!(
+            (zstd.mode, zstd.data.as_slice()),
+            (S_IFLNK | LINK_MODE, b"recovery".as_slice())
+        );
         assert_eq!((zstd.uid, zstd.gid, zstd.nlink), (0, 0, 1));
-        assert!(back.find("sbin").is_some_and(Entry::is_dir), "a missing folder is made");
-        assert!(rd.link("system/bin/recovery", "zstd").is_err(), "a file is no link to point anew");
-        assert!(rd.link("system/bin/recovery/7za", "recovery").is_err(), "a file holds no links");
+        assert!(
+            back.find("sbin").is_some_and(Entry::is_dir),
+            "a missing folder is made"
+        );
+        assert!(
+            rd.link("system/bin/recovery", "zstd").is_err(),
+            "a file is no link to point anew"
+        );
+        assert!(
+            rd.link("system/bin/recovery/7za", "recovery").is_err(),
+            "a file holds no links"
+        );
     }
 
     /// An entry owned by whoever runs the tests, who can give it that owner.
     fn mine(name: &str, mode: u32, data: &[u8]) -> Entry {
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-        Entry { name: name.into(), mode, uid, gid, mtime: 1_500_000_000, nlink: 1, dev: (0, 0), rdev: (0, 0), data: data.to_vec() }
+        Entry {
+            name: name.into(),
+            mode,
+            uid,
+            gid,
+            mtime: 1_500_000_000,
+            nlink: 1,
+            dev: (0, 0),
+            rdev: (0, 0),
+            data: data.to_vec(),
+        }
     }
 
     #[test]
@@ -386,7 +495,10 @@ mod tests {
         fs::write(root.join("init"), b"old program").unwrap();
         fs::create_dir(root.join("skyward")).unwrap();
         fs::write(root.join("skyward/system.toml"), b"id = \"test\"").unwrap();
-        fs::DirBuilder::new().mode(0o700).create(root.join("dev")).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(root.join("dev"))
+            .unwrap();
         fs::write(root.join("etc"), b"a file").unwrap();
         std::os::unix::fs::symlink("nowhere", root.join("bin")).unwrap();
         let rd = Ramdisk {
@@ -404,19 +516,48 @@ mod tests {
         };
         rd.unpack(root).unwrap();
         let meta = |name: &str| fs::symlink_metadata(root.join(name)).unwrap();
-        assert_eq!(fs::read_link(root.join("init")).unwrap(), Path::new("/system/bin/init"), "a link in the file's place");
-        assert_eq!(fs::read(root.join("skyward/system.toml")).unwrap(), b"id = \"test\"", "what the archive leaves out stays");
-        assert_eq!(meta("dev").permissions().mode() & 0o7777, 0o755, "a folder there stays, with the archive's mode");
-        assert_eq!(fs::read_link(root.join("etc")).unwrap(), Path::new("/system/etc"), "a link in the file's place");
+        assert_eq!(
+            fs::read_link(root.join("init")).unwrap(),
+            Path::new("/system/bin/init"),
+            "a link in the file's place"
+        );
+        assert_eq!(
+            fs::read(root.join("skyward/system.toml")).unwrap(),
+            b"id = \"test\"",
+            "what the archive leaves out stays"
+        );
+        assert_eq!(
+            meta("dev").permissions().mode() & 0o7777,
+            0o755,
+            "a folder there stays, with the archive's mode"
+        );
+        assert_eq!(
+            fs::read_link(root.join("etc")).unwrap(),
+            Path::new("/system/etc"),
+            "a link in the file's place"
+        );
         assert!(meta("bin").is_dir(), "a folder in the link's place");
         assert_eq!(meta("bin").permissions().mode() & 0o7777, 0o751);
-        assert_eq!(fs::read(root.join("system/bin/init")).unwrap(), b"new program");
+        assert_eq!(
+            fs::read(root.join("system/bin/init")).unwrap(),
+            b"new program"
+        );
         assert_eq!(meta("system/bin/init").permissions().mode() & 0o7777, 0o750);
         assert!(meta("system/bin/pipe").file_type().is_fifo());
         for e in &rd.entries {
             let m = meta(&e.name);
-            assert_eq!(m.mtime(), 1_500_000_000, "{} has the archive's time", e.name);
-            assert_eq!((m.uid(), m.gid()), (e.uid, e.gid), "{} has the archive's owner", e.name);
+            assert_eq!(
+                m.mtime(),
+                1_500_000_000,
+                "{} has the archive's time",
+                e.name
+            );
+            assert_eq!(
+                (m.uid(), m.gid()),
+                (e.uid, e.gid),
+                "{} has the archive's owner",
+                e.name
+            );
         }
     }
 
@@ -425,15 +566,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("lib")).unwrap();
         fs::write(dir.path().join("lib/modules.load"), b"").unwrap();
-        let rd = Ramdisk { entries: vec![mine("lib", S_IFREG | 0o644, b"a file")] };
+        let rd = Ramdisk {
+            entries: vec![mine("lib", S_IFREG | 0o644, b"a file")],
+        };
         assert!(rd.unpack(dir.path()).is_err());
         assert!(dir.path().join("lib/modules.load").exists());
     }
 
     #[test]
     fn a_link_already_there_is_pointed_anew_keeping_the_rest_of_its_entry() {
-        let mut rd = Ramdisk { entries: Vec::new() };
-        rd.add("system/bin/ziptool", 0o755, b"binary".to_vec()).unwrap();
+        let mut rd = Ramdisk {
+            entries: Vec::new(),
+        };
+        rd.add("system/bin/ziptool", 0o755, b"binary".to_vec())
+            .unwrap();
         rd.entries.push(Entry {
             name: "system/bin/unzip".into(),
             mode: S_IFLNK | 0o755,
@@ -449,8 +595,14 @@ mod tests {
         rd.link("system/bin/unzip", "recovery").unwrap();
         let back = Ramdisk::decode(&rd.encode().unwrap()).unwrap();
         let unzip = back.find("system/bin/unzip").unwrap();
-        assert_eq!((unzip.data.as_slice(), unzip.mode, unzip.gid), (b"recovery".as_slice(), S_IFLNK | 0o755, 2000));
+        assert_eq!(
+            (unzip.data.as_slice(), unzip.mode, unzip.gid),
+            (b"recovery".as_slice(), S_IFLNK | 0o755, 2000)
+        );
         assert_eq!(back.entries.len(), count, "no second entry of the name");
-        assert!(back.find("system/bin/ziptool").is_some(), "what it pointed to stays");
+        assert!(
+            back.find("system/bin/ziptool").is_some(),
+            "what it pointed to stays"
+        );
     }
 }

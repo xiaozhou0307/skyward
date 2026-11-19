@@ -9,7 +9,7 @@ pub const GROUP_FILES: [&str; 2] = ["/vendor/etc/group", "/odm/etc/group"];
 /// The accounts Android fixes once and for all. The rules, and the init
 /// scripts of the phone's own programs, name them rather than their
 /// numbers, and a recovery has no list of its own to look them up in.
-const ACCOUNTS: [(&str, u32); 33] = [
+const ACCOUNTS: [(&str, u32); 35] = [
     ("root", 0),
     ("system", 1000),
     ("radio", 1001),
@@ -38,7 +38,9 @@ const ACCOUNTS: [(&str, u32); 33] = [
     ("nfc", 1027),
     ("audioserver", 1041),
     ("cameraserver", 1047),
+    ("secure_element", 1068),
     ("shell", 2000),
+    ("inet", 3003),
     ("readproc", 3009),
     ("wakelock", 3010),
     ("uhid", 3011),
@@ -185,6 +187,27 @@ mod tests {
 
     fn known() -> HashMap<String, u32> {
         accounts(&[])
+    }
+
+    #[test]
+    fn wlan_helper_accounts_resolve_without_vendor_files() {
+        let known = known();
+        assert_eq!(account(&known, "wifi"), Some(1010));
+        assert_eq!(account(&known, "system"), Some(1000));
+        assert_eq!(account(&known, "gps"), Some(1021));
+        assert_eq!(account(&known, "inet"), Some(3003));
+        assert_eq!(account(&known, "unknown_wifi_group"), None);
+    }
+
+    #[test]
+    fn turner_tee_supplicant_groups_resolve_without_vendor_account_files() {
+        let known = known();
+        let groups: Vec<_> = ["root", "system", "secure_element", "nfc"]
+            .iter()
+            .map(|name| account(&known, name))
+            .collect();
+        assert_eq!(groups, [Some(0), Some(1000), Some(1068), Some(1027)]);
+        assert_eq!(account(&known, "unknown_secure_element"), None);
     }
 
     #[test]

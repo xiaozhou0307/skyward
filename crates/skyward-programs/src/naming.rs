@@ -8,9 +8,9 @@
 //! init reads none of the phone's scripts, so the recovery does what such a
 //! section does before it reads the descriptions.
 
-use crate::phone::{Happens, Phone, DESCRIBING, STARTING};
-use crate::secure::{libraries_of, Started};
-use anyhow::{bail, ensure, Context, Result};
+use crate::phone::{DESCRIBING, Happens, Phone, STARTING};
+use crate::secure::{Started, libraries_of};
+use anyhow::{Context, Result, bail, ensure};
 use skyward_config::Service;
 
 /// One thing the phone's init does to name a build.
@@ -49,7 +49,9 @@ pub fn steps(phone: &Phone) -> Result<Vec<Does>> {
         if phone.properties.contains_key(property) {
             continue;
         }
-        let Some((section, at)) = first_to_set(phone, property) else { continue };
+        let Some((section, at)) = first_to_set(phone, property) else {
+            continue;
+        };
         match naming.iter_mut().find(|(named, _)| *named == section) {
             Some((_, last)) => *last = (*last).max(at),
             None => naming.push((section, at)),
@@ -62,8 +64,13 @@ pub fn steps(phone: &Phone) -> Result<Vec<Does>> {
             match command.first().map(String::as_str) {
                 Some(RUN) => does.push(Does::Run(Box::new(run(phone, command)?))),
                 Some(SET) => {
-                    let [_, name, value] = &command[..] else { bail!("`{}` is not a property and its value", command.join(" ")) };
-                    does.push(Does::Set { name: name.clone(), value: value.clone() });
+                    let [_, name, value] = &command[..] else {
+                        bail!("`{}` is not a property and its value", command.join(" "))
+                    };
+                    does.push(Does::Set {
+                        name: name.clone(),
+                        value: value.clone(),
+                    });
                 }
                 _ => {}
             }
@@ -77,7 +84,11 @@ pub fn steps(phone: &Phone) -> Result<Vec<Does>> {
 /// the order it read them. One that names no such moment waits for its
 /// properties alone, which init looks at once all of those have passed.
 fn turn(phone: &Phone, section: usize) -> (usize, usize) {
-    let moment = phone.actions[section].triggers.iter().find_map(|t| STARTING.iter().position(|s| s == t)).unwrap_or(STARTING.len());
+    let moment = phone.actions[section]
+        .triggers
+        .iter()
+        .find_map(|t| STARTING.iter().position(|s| s == t))
+        .unwrap_or(STARTING.len());
     (moment, section)
 }
 
@@ -86,8 +97,13 @@ fn turn(phone: &Phone, section: usize) -> (usize, usize) {
 /// first value a property of this kind is given and turns away the rest.
 fn first_to_set(phone: &Phone, property: &str) -> Option<(usize, usize)> {
     let sets = |command: &Vec<String>| matches!(&command[..], [set, name, _] if set == SET && name == property);
-    let holding = phone.actions.iter().enumerate().filter(|(_, action)| phone.holds(&action.triggers) == Happens::Yes);
-    let setting = holding.filter_map(|(section, action)| Some((section, action.commands.iter().position(sets)?)));
+    let holding = phone
+        .actions
+        .iter()
+        .enumerate()
+        .filter(|(_, action)| phone.holds(&action.triggers) == Happens::Yes);
+    let setting = holding
+        .filter_map(|(section, action)| Some((section, action.commands.iter().position(sets)?)));
     setting.min_by_key(|(section, _)| turn(phone, *section))
 }
 
@@ -97,7 +113,14 @@ fn first_to_set(phone: &Phone, property: &str) -> Option<(usize, usize)> {
 /// as a recovery runs the phone's programs under its own.
 fn run(phone: &Phone, command: &[String]) -> Result<Started> {
     let line = || command.join(" ");
-    let words = command.iter().map(|word| phone.expand(word).with_context(|| format!("`{}` names a property the phone has not", line()))).collect::<Result<Vec<_>>>()?;
+    let words = command
+        .iter()
+        .map(|word| {
+            phone
+                .expand(word)
+                .with_context(|| format!("`{}` names a property the phone has not", line()))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let (as_whom, program) = match words.iter().position(|word| word == PROGRAM_FOLLOWS) {
         Some(at) => (&words[1..at], &words[at + 1..]),
         None => (&words[..0], &words[1..]),
@@ -107,6 +130,11 @@ fn run(phone: &Phone, command: &[String]) -> Result<Started> {
         path: phone.started_from(&program[0]),
         args: program[1..].to_vec(),
         libraries: libraries_of(&program[0], phone.bundle.as_deref()),
+        env: Default::default(),
+        early: false,
+        wait_ms: 0,
+        ready_timeout_ms: 0,
+        ready_value: None,
         oneshot: true,
         ready_property: None,
         ready_service: None,
@@ -136,18 +164,36 @@ mod tests {
             let folder = at.join(name).join("etc/init");
             fs::create_dir_all(&folder).unwrap();
             fs::write(folder.join("names.rc"), script).unwrap();
-            partitions.push(Partition { name: name.to_string(), mounted: Path::new("/").join(name), at: at.join(name) });
+            partitions.push(Partition {
+                name: name.to_string(),
+                mounted: Path::new("/").join(name),
+                at: at.join(name),
+            });
         }
-        let properties: HashMap<String, String> = properties.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
+        let properties: HashMap<String, String> = properties
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
         Phone::read(partitions, properties, None).unwrap()
     }
 
-    fn once(path: &str, args: &[&str], libraries: &[&str], user: Option<&str>, groups: &[&str]) -> Does {
+    fn once(
+        path: &str,
+        args: &[&str],
+        libraries: &[&str],
+        user: Option<&str>,
+        groups: &[&str],
+    ) -> Does {
         let words = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
         Does::Run(Box::new(Started::from(Service {
             path: path.to_string(),
             args: words(args),
             libraries: words(libraries),
+            env: Default::default(),
+            early: false,
+            wait_ms: 0,
+        ready_timeout_ms: 0,
+        ready_value: None,
             oneshot: true,
             ready_property: None,
             ready_service: None,
@@ -161,7 +207,10 @@ mod tests {
     }
 
     fn set(name: &str, value: &str) -> Does {
-        Does::Set { name: name.to_string(), value: value.to_string() }
+        Does::Set {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
     }
 
     const BY_THE_CHIP: &str = "on early-init\n    exec u:r:vendor_qti_init_shell:s0 -- /vendor/bin/init.qti.qcv.sh\n    setprop ro.boot.product.vendor.sku ${ro.vendor.qti.soc_name}\n    setprop ro.soc.model ${ro.vendor.qti.soc_model}\n";
@@ -169,18 +218,50 @@ mod tests {
     #[test]
     fn a_build_the_bootloader_does_not_name_is_named_as_the_phone_s_init_names_it() {
         let dir = tempfile::tempdir().unwrap();
-        let named_by_none = phone(dir.path(), BY_THE_CHIP, "", &[("ro.boot.hardware", "qcom"), ("ro.boot.product.hardware.sku", "ishtar")]);
-        let vendor_libraries = ["/system/lib64", "/vendor/lib64", "/vendor/lib64/hw", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
+        let named_by_none = phone(
+            dir.path(),
+            BY_THE_CHIP,
+            "",
+            &[
+                ("ro.boot.hardware", "qcom"),
+                ("ro.boot.product.hardware.sku", "ishtar"),
+            ],
+        );
+        let vendor_libraries = [
+            "/system/lib64",
+            "/vendor/lib64",
+            "/vendor/lib64/hw",
+            "/mnt/system/system/lib64",
+            "/mnt/system/system/lib64/bootstrap",
+        ];
         assert_eq!(
             steps(&named_by_none).unwrap(),
             [
-                once("/vendor/bin/init.qti.qcv.sh", &[], &vendor_libraries, None, &[]),
+                once(
+                    "/vendor/bin/init.qti.qcv.sh",
+                    &[],
+                    &vendor_libraries,
+                    None,
+                    &[]
+                ),
                 set("ro.boot.product.vendor.sku", "${ro.vendor.qti.soc_name}"),
             ],
             "the section's commands up to the one that names the build, and none after it"
         );
-        let named = phone(dir.path(), BY_THE_CHIP, "", &[("ro.boot.hardware", "qcom"), ("ro.boot.product.vendor.sku", "kalama")]);
-        assert_eq!(steps(&named).unwrap(), [], "a build that has its name is not named again, and one no script names stays as it is");
+        let named = phone(
+            dir.path(),
+            BY_THE_CHIP,
+            "",
+            &[
+                ("ro.boot.hardware", "qcom"),
+                ("ro.boot.product.vendor.sku", "kalama"),
+            ],
+        );
+        assert_eq!(
+            steps(&named).unwrap(),
+            [],
+            "a build that has its name is not named again, and one no script names stays as it is"
+        );
     }
 
     #[test]
@@ -190,14 +271,35 @@ mod tests {
                       on init && property:ro.boot.hwc=CN\n    write /dev/kmsg naming\n    exec u:r:shell:s0 system system input -- /odm/bin/which.sh --of ${ro.boot.hwc}\n    setprop ro.boot.product.vendor.sku ${ro.vendor.which}\n    setprop ro.boot.product.hardware.sku ${ro.vendor.which}_${ro.boot.hwc}\n    setprop ro.vendor.after 1\n";
         let odm = "on charger\n    setprop ro.boot.product.hardware.sku charging\n";
         let dir = tempfile::tempdir().unwrap();
-        let phone = phone(dir.path(), vendor, odm, &[("ro.boot.hardware", "qcom"), ("ro.boot.hwc", "CN")]);
-        let odm_libraries = ["/system/lib64", "/vendor/lib64", "/vendor/lib64/hw", "/odm/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"];
+        let phone = phone(
+            dir.path(),
+            vendor,
+            odm,
+            &[("ro.boot.hardware", "qcom"), ("ro.boot.hwc", "CN")],
+        );
+        let odm_libraries = [
+            "/system/lib64",
+            "/vendor/lib64",
+            "/vendor/lib64/hw",
+            "/odm/lib64",
+            "/mnt/system/system/lib64",
+            "/mnt/system/system/lib64/bootstrap",
+        ];
         assert_eq!(
             steps(&phone).unwrap(),
             [
-                once("/odm/bin/which.sh", &["--of", "CN"], &odm_libraries, Some("system"), &["system", "input"]),
+                once(
+                    "/odm/bin/which.sh",
+                    &["--of", "CN"],
+                    &odm_libraries,
+                    Some("system"),
+                    &["system", "input"]
+                ),
                 set("ro.boot.product.vendor.sku", "${ro.vendor.which}"),
-                set("ro.boot.product.hardware.sku", "${ro.vendor.which}_${ro.boot.hwc}"),
+                set(
+                    "ro.boot.product.hardware.sku",
+                    "${ro.vendor.which}_${ro.boot.hwc}"
+                ),
             ],
             "the section that holds and comes first as the phone starts, once for both builds it names"
         );
@@ -206,8 +308,13 @@ mod tests {
     #[test]
     fn a_line_that_runs_nothing_or_names_a_property_the_phone_has_not_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        for exec in ["exec u:r:shell:s0 --", "exec -- /vendor/bin/which.sh ${ro.boot.hwc}"] {
-            let script = format!("on early-init\n    {exec}\n    setprop ro.boot.product.vendor.sku ${{ro.vendor.which}}\n");
+        for exec in [
+            "exec u:r:shell:s0 --",
+            "exec -- /vendor/bin/which.sh ${ro.boot.hwc}",
+        ] {
+            let script = format!(
+                "on early-init\n    {exec}\n    setprop ro.boot.product.vendor.sku ${{ro.vendor.which}}\n"
+            );
             let phone = phone(dir.path(), &script, "", &[("ro.boot.hardware", "qcom")]);
             assert!(steps(&phone).is_err(), "{exec}");
         }

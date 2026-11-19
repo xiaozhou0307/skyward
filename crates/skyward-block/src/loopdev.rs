@@ -51,7 +51,21 @@ mod android {
     /// give its path. The device goes away once whatever is mounted from it
     /// is unmounted.
     pub fn attach(file: &Path, offset: u64, length: u64) -> Result<PathBuf> {
-        let backing = File::open(file).with_context(|| format!("open {}", file.display()))?;
+        attach_with(file, offset, length, READ_ONLY)
+    }
+
+    /// The same over a file the device may write to, which is what a part of
+    /// the phone's memory takes the changes a mapping must not keep.
+    pub fn attach_rw(file: &Path, offset: u64, length: u64) -> Result<PathBuf> {
+        attach_with(file, offset, length, 0)
+    }
+
+    fn attach_with(file: &Path, offset: u64, length: u64, flags: u32) -> Result<PathBuf> {
+        let backing = File::options()
+            .read(true)
+            .write(flags != READ_ONLY)
+            .open(file)
+            .with_context(|| format!("open {}", file.display()))?;
         let control = File::open(CONTROL).with_context(|| format!("open {CONTROL}"))?;
         let number = unsafe { libc::ioctl(control.as_raw_fd(), GET_FREE as libc::Ioctl) };
         if number < 0 {
@@ -67,7 +81,7 @@ mod android {
         config.fd = backing.as_raw_fd() as u32;
         config.info.offset = offset;
         config.info.size_limit = length;
-        config.info.flags = READ_ONLY;
+        config.info.flags = flags;
         if unsafe { libc::ioctl(device.as_raw_fd(), CONFIGURE as libc::Ioctl, &mut config) } < 0 {
             return Err(std::io::Error::last_os_error()).with_context(|| format!("point {} at {}", path.display(), file.display()));
         }

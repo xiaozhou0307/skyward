@@ -4,7 +4,7 @@
 //! another, each ending with the systems read again.
 
 use anyhow::{Context, Result};
-use skyward_systems::{install, Overview, State, Who};
+use skyward_systems::{Overview, State, Who, install};
 use skyward_vab::Slot;
 use std::os::fd::RawFd;
 use std::sync::mpsc::{self, Sender};
@@ -40,7 +40,10 @@ pub enum Event {
 /// The slot the bootloader starts next, as the phone's boot control holds
 /// it.
 pub fn next_slot() -> Result<Slot> {
-    let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+    let (binder, hardware) = (
+        skyward_binder::driver::Binder::open()?,
+        skyward_binder::driver::Binder::hardware()?,
+    );
     let control = skyward_vab::boot::BootControl::open(&binder, &hardware)?;
     Ok(control.slots()?.active)
 }
@@ -59,7 +62,12 @@ fn read(version_prop: &str) -> Result<Overview> {
         None => false,
     };
     let held = install::held(&state, current)?;
-    Ok(install::overview(&state, skyward_systems::installed_name(&props, version_prop), changed, held))
+    Ok(install::overview(
+        &state,
+        skyward_systems::installed_name(&props, version_prop),
+        changed,
+        held,
+    ))
 }
 
 /// The system whose boot set is in the boot partitions.
@@ -99,7 +107,8 @@ fn switched(done: Result<Who>) -> Event {
 
 /// The system a request in misc names.
 fn named(name: &str) -> Result<Who> {
-    Who::named(name, &install::state()?).with_context(|| format!("no system named {name:?} is installed"))
+    Who::named(name, &install::state()?)
+        .with_context(|| format!("no system named {name:?} is installed"))
 }
 
 /// The work on the systems, from a thread of its own.
@@ -126,20 +135,32 @@ impl Worker {
                         Err(e) => Some(Event::NotResumed(format!("{e:#}"))),
                     },
                     Task::Switch(to) => Some(switched(switch(to).map(|()| to))),
-                    Task::SwitchNamed(name) => Some(switched(named(&name).and_then(|to| switch(to).map(|()| to)))),
-                    Task::Remove => install::remove().err().map(|e| Event::Failed(format!("{e:#}"))),
+                    Task::SwitchNamed(name) => Some(switched(
+                        named(&name).and_then(|to| switch(to).map(|()| to)),
+                    )),
+                    Task::Remove => install::remove()
+                        .err()
+                        .map(|e| Event::Failed(format!("{e:#}"))),
                 };
                 if let Some(event) = told {
                     tell.tell(event);
                 }
-                tell.tell(Event::Read(read(&version_prop).map_err(|e| format!("{e:#}"))));
+                tell.tell(Event::Read(
+                    read(&version_prop).map_err(|e| format!("{e:#}")),
+                ));
             }
         })?;
-        Ok(Worker { tasks, pending: 0, worker })
+        Ok(Worker {
+            tasks,
+            pending: 0,
+            worker,
+        })
     }
 
     pub fn send(&mut self, task: Task) {
-        self.tasks.send(task).expect("the systems' worker takes tasks while the screen holds it");
+        self.tasks
+            .send(task)
+            .expect("the systems' worker takes tasks while the screen holds it");
         self.pending += 1;
     }
 
@@ -156,7 +177,10 @@ impl Worker {
     /// The events since the last call.
     pub fn events(&mut self) -> Vec<Event> {
         let events = self.worker.events();
-        self.pending -= events.iter().filter(|e| matches!(e, Event::Read(_))).count();
+        self.pending -= events
+            .iter()
+            .filter(|e| matches!(e, Event::Read(_)))
+            .count();
         events
     }
 }

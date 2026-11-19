@@ -58,6 +58,7 @@ mod terminal;
 #[cfg(test)]
 mod testing;
 mod update;
+mod verified;
 mod wipe;
 mod wlan;
 
@@ -125,6 +126,9 @@ pub enum Screen {
     /// system's rules give them: what it does and a swipe to start, then
     /// how far it has come and how it ended.
     Relabel,
+    /// What the bootloader still checks of what it boots, and the two
+    /// switches that stop it.
+    Verified,
     /// The partitions whose filesystems can be repaired or made afresh as
     /// another.
     Filesystems,
@@ -454,6 +458,14 @@ pub enum Effect {
     /// Read the systems for the systems page, telling them with
     /// [`App::set_systems`].
     ReadSystems,
+    /// Read what the bootloader still checks, telling it with
+    /// [`App::set_verified`].
+    ReadVerified,
+    /// Stop or start the bootloader's check of the vbmeta chain's
+    /// signatures, and read the checks again.
+    SetVerification(bool),
+    /// Stop or start the dm-verity hash trees, and read the checks again.
+    SetVerity(bool),
     /// Write this system's boot set into the boot partitions and restart
     /// into it, telling of a switch that did not go with
     /// [`App::systems_work_failed`].

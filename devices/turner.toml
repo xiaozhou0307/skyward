@@ -1,0 +1,294 @@
+# REDMI K Pad, MT6991 / Dimensity 9400+, HyperOS 4.0.3.0 (Android 17)
+[device]
+codename = "turner"
+brand = "Redmi"
+model = "REDMI K Pad"
+ab = true
+soc = { hans = "天玑9400+", hant = "天璣9400+", en = "Dimensity 9400+" }
+os_version_prop = "ro.mi.os.version.incremental"
+
+[display]
+width = 1880
+height = 3008
+density = 420
+diagonal = 8.8
+no_sleep = true
+
+[modules]
+sources = ["vendor_boot", "vendor_dlkm", "vendor", "odm_dlkm", "system_dlkm"]
+# The module loader accepts exact names only.
+load = ["nt36536e_touch_turner"]
+
+[[owners]]
+user = "system"
+group = "system"
+mode = 0o660
+paths = ["/dev/tee0", "/dev/teepriv0", "/dev/rpmb0", "/dev/mmcblk0rpmb"]
+
+[[owners]]
+user = "system"
+group = "system"
+mode = 0o755
+create = true
+paths = ["/mnt/vendor/persist/data", "/mnt/vendor/persist/fdsd"]
+
+[[service]]
+path = "/odm/bin/touch_report_debug"
+libraries = ["/system/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap", "/mnt/system_ext/lib64", "/odm/lib64", "/vendor/lib64"]
+user = "root"
+groups = ["root"]
+early = true
+
+[[service]]
+path = "/vendor/bin/tee-supplicant"
+# 它直接开 /dev/tee*，不经过 servicemanager，所以照旧用已安装系统的库。
+# 以 root 运行：TA 文件在 /odm/mitee/ta/ 和 /vendor/mitee/ta/，属主是 root，
+# system 用户读不了，导致 "loading ta from /odm/mitee/ta failed"。
+libraries = [
+    "/mnt/system/system/lib64",
+    "/mnt/system/system/lib64/bootstrap",
+    "/apex/com.android.i18n/lib64",
+    "/apex/com.android.runtime/lib64",
+    "/apex/com.android.runtime/lib64/bionic",
+    "/vendor/lib64",
+    "/mnt/system_ext/lib64",
+]
+user = "root"
+groups = ["root", "system", "secure_element", "nfc"]
+capabilities = ["DAC_OVERRIDE", "SYS_RAWIO"]
+# 把 LOG(FATAL)/CHECK 失败的原因直接写进 kmsg（logd 挂了也能看到）
+env = { LD_PRELOAD = "/skyward/libkmsglog.so" }
+
+[[service]]
+path = "/vendor/bin/hw/android.hardware.security.keymint@3.0-service.mitee"
+libraries = [
+    "/system/lib64",
+    "/system/lib64/bootstrap",
+    "/mnt/system/system/lib64",
+    "/mnt/system/system/lib64/bootstrap",
+    "/apex/com.android.i18n/lib64",
+    "/apex/com.android.runtime/lib64",
+    "/apex/com.android.runtime/lib64/bionic",
+    "/vendor/lib64",
+    "/mnt/system_ext/lib64",
+]
+user = "root"
+groups = ["root", "system", "drmrpc"]
+capabilities = ["DAC_OVERRIDE", "SYS_RAWIO"]
+# The secure world's supplicant has to be serving before the key service asks
+# it anything: started together, the key service asks first and waits forever.
+wait_ms = 4000
+# A17 libcppcose_rkp needs MLDSA65 from the installed system libcrypto.
+# Preload only crypto, preserving recovery Binder library precedence.
+env = { LD_PRELOAD = "/skyward/libkmsglog.so:/mnt/system/system/lib64/libcrypto.so" }
+ready_service = "android.hardware.security.keymint.IKeyMintDevice/default"
+# 这套 keymint 一进程里起三个接口：密钥设备、可信时钟、共享密钥。注册时
+# 服务目录只肯收它在 VINTF 清单里见过的名字，而清单是按要的名字挑文件拷进
+# recovery 的：只说 IKeyMintDevice，另外两个的清单文件就不会被拷进来，于是
+# 注册第二个接口时目录回 "Could not find ... in the VINTF manifest"，HAL 认为
+# 是致命错误直接 abort。三个名字都要说，三份清单才会都到。
+registers = [
+    "android.hardware.security.secureclock.ISecureClock/default",
+    "android.hardware.security.sharedsecret.ISharedSecret/default",
+]
+
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper-service.mitee"
+libraries = [
+    "/system/lib64",
+    "/system/lib64/bootstrap",
+    "/mnt/system/system/lib64",
+    "/mnt/system/system/lib64/bootstrap",
+    "/apex/com.android.i18n/lib64",
+    "/apex/com.android.runtime/lib64",
+    "/apex/com.android.runtime/lib64/bionic",
+    "/vendor/lib64",
+    "/mnt/system_ext/lib64",
+]
+user = "root"
+groups = ["root", "system"]
+capabilities = ["DAC_OVERRIDE", "SYS_RAWIO"]
+wait_ms = 5000
+env = { LD_PRELOAD = "/skyward/libkmsglog.so" }
+# AIDL 名取自 skyward 自己的常量（crates/skyward-crypto/src/gatekeeper.rs:23）。
+# 即使名字不符也只会记一条 kmsg，不再阻塞后面的服务。
+ready_service = "android.hardware.gatekeeper.IGatekeeper/default"
+
+[[owners]]
+user = "system"
+group = "system"
+mode = 0o666
+# 触控要用到的节点在画第一帧之前就交出去：驱动模块一加载，节点就出现，
+# 而页面要立刻能点。
+early = true
+paths = ["/dev/xiaomi-touch"]
+
+# HAL 以 system 身份读写的 touch 节点，原厂 init 里逐个 chown 0664 的就是这一批。
+# 这台机器上不少节点并不存在（实测：只有 enable_touch_raw / resolution_factor 在），
+# 缺的会被 hand_over 汇总成一条 kmsg，不影响其它节点。
+[[owners]]
+user = "system"
+group = "system"
+mode = 0o664
+early = true
+paths = [
+    "/dev/xiaomi-touch-knock",
+    "/dev/xiaomi-thp",
+    "/sys/class/touch/touch_dev/enable_touch_raw",
+    "/sys/class/touch/touch_dev/resolution_factor",
+    "/sys/class/touch/touch_dev/update_rawdata",
+    "/sys/class/touch/touch_dev/gesture_single_tap_state",
+    "/sys/class/touch/touch_dev/fod_press_status",
+    "/sys/class/touch/touch_dev/suspend_state",
+    "/sys/class/touch/touch_dev/touch_sensor",
+    "/sys/class/touch/touch_dev/touch_sensor_ctrl",
+    "/sys/class/touch/touch_dev/touch_active_status",
+    "/sys/class/touch/touch_dev/touch_finger_status",
+    "/sys/class/touch/touch_dev/touch_thp_cmd",
+    "/sys/class/touch/touch_dev/touch_thp_cmd_data",
+    "/sys/class/touch/touch_dev/touch_thp_cmd_ready",
+    "/proc/tp_selftest",
+    "/proc/tp_hal_version",
+    "/proc/tp_fw_version",
+    "/proc/tp_lockdown_info",
+]
+
+[[service]]
+path = "/system/bin/hw/android.hardware.boot-service.mtk_recovery"
+libraries = ["/system/lib64", "/system/lib64/bootstrap", "/vendor/lib64", "/mnt/system_ext/lib64"]
+user = "root"
+groups = ["root"]
+ready_service = "android.hardware.boot.IBootControl/default"
+
+[[service]]
+path = "/odm/bin/hw/vendor.xiaomi.hw.touchfeature-service"
+libraries = ["/system/lib64", "/system/lib64/bootstrap", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap", "/apex/com.android.i18n/lib64", "/apex/com.android.runtime/lib64", "/apex/com.android.runtime/lib64/bionic", "/odm/lib64", "/vendor/lib64", "/mnt/system_ext/lib64"]
+user = "system"
+groups = ["system", "input"]
+capabilities = ["SYS_NICE"]
+ready_service = "vendor.xiaomi.hw.touchfeature.ITouchFeature/default"
+
+[partitions]
+mounted = ["userdata", "metadata", "persist", "nvdata"]
+early = ["metadata", "persist", "userdata"]
+
+[update]
+server = "https://update.miui.com/updates/miotaV3.php"
+
+[backup]
+efs = ["nvdata", "nvcfg", "persist", "protect1", "protect2", "seccfg"]
+data_skipped = ["vendor/mitee", "vendor/tzstorage", "vendor/qtee", "vendor/fingerprint"]
+
+[wipe]
+logs = ["/data/miuilog", "/data/vendor/diag", "/data/vendor/log", "/data/vendor/ramdump", "/data/vendor/ssrdump", "/data/vendor/tombstones", "/data/vendor/wlan_logs"]
+
+# Stock init.btmtk_uart.rc gives the UART to bluetooth before uart_launcher.
+# 8250_mtk creates ttyS3 during first-stage module loading.
+[[owners]]
+user = "bluetooth"
+group = "bluetooth"
+mode = 0o600
+early = true
+paths = ["/dev/ttyS3"]
+
+# WLAN stack for the MT6991 vendor driver.
+[wlan]
+# btmtk_uart_unify is here for its side effect, not for Bluetooth itself:
+# conninfra only starts the pre-calibration flow once a BT sub-driver AND a
+# WIFI sub-driver are both registered ("[pre_cal] trigger pre-cal BT/WF are
+# registered"), and its probe calls connv3_sub_drv_ops_register() to fill the
+# BT side. Without it the recovery log shows type=[1] bt=[0][0] wf=[...], no
+# pre-cal runs, and the WLAN driver's on-request spins until "Timeout,
+# pre_cal_flow: 0, locked: 0" and then the write to /dev/wmtWifi fails with
+# EIO after ten seconds.
+# bluetooth before btmtk: btmtk imports hci_* from it, and the kernel refuses
+# bluetooth for a symbol it imports (device_find_any_child), which is what the
+# hook file above turns round while these are loaded.
+modules = ["rfkill", "cfg80211", "bluetooth", "btmtk_uart_unify", "wmt_chrdev_wifi_connac3", "wlan_drv_gen4m_6991_6653_triband"]
+preload = ["rfkill", "cfg80211"]
+# The module that turns the kernel's check round while the stack loads.
+hook = "/sys/module/kallrecon/parameters/hook"
+# Stock libwifi-hal.so: wifi_load_driver -> wifi_change_driver_state("1"), strlen + 1.
+writes = [{ path = "/dev/wmtWifi", value = "1\u0000" }]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+# The supplicant is the phone's own program, built against the phone's own
+# system libraries, and the kernel log showed it cannot be served by mixing
+# them with the vendor's copies: the vendor partition's libbinder.so does not
+# hold openDeclaredPassthroughHal that the installed system's libbinder_ndk.so
+# asks for, and its libc++.so does not hold __hash_memory that the installed
+# system's libbinder.so asks for. So the installed system's own set comes
+# first, as it does for tee-supplicant above, and the recovery's ramdisk stays
+# last as a fallback: recovery's /system is not the installed Android system.
+libraries = [
+    "/mnt/system/system/lib64",
+    "/mnt/system/system/lib64/bootstrap",
+    "/apex/com.android.runtime/lib64",
+    "/apex/com.android.runtime/lib64/bionic",
+    "/vendor/lib64",
+    "/mnt/system_ext/lib64",
+    "/system/lib64",
+]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://connect.rom.miui.com/generate_204"
+
+# The nodes the WLAN modules make, given the owner and mode /vendor/etc/ueventd.rc
+# names: recovery's own ueventd read those rules before vendor was mounted.
+nodes = ["/dev/conninfra_dev", "/dev/wmtWifi"]
+
+# Started only when WLAN is asked for, in this order, never from the service
+# startup the key services come after. Stock runs the first two oneshot at boot
+# and the third as a service, and each waits for what the one before it leaves:
+# conninfra_loader sets vendor.connsys.driver.ready=yes, nvram_daemon reads the
+# phone's calibration and sets vendor.service.wifi_nvram, and wlan_assistant
+# hands that calibration to the driver, which registers the callbacks the
+# driver needs before it can be turned on.
+[[wlan.helper]]
+path = "/vendor/bin/conninfra_loader"
+oneshot = true
+# The phone's own prop.default already carries
+# vendor.connsys.driver.ready=no, and its init scripts trigger on =yes, so
+# only "yes" means the loader ran. Waiting for a non-empty value took the
+# shipped "no" for ready and never ran the loader at all, which is why
+# WIFI_write_on ended in "WMT turn on WIFI fail".
+ready_property = "vendor.connsys.driver.ready"
+ready_value = "yes"
+# Stock runs this at boot with no bound; keep a bound, but one that covers
+# the connectivity firmware bring-up rather than cutting it short.
+ready_timeout_ms = 60000
+libraries = ["/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap", "/vendor/lib64", "/mnt/system_ext/lib64"]
+user = "system"
+groups = ["system"]
+env = { LD_PRELOAD = "/skyward/libkmsglog.so" }
+
+# The UART module registers a line discipline; loading it alone does not run
+# btmtk_cif_probe. Stock init starts this after connsys.driver.ready=yes.
+# It attaches ttyS3 and lets BT register the pre-cal callbacks required by WiFi.
+[[wlan.helper]]
+path = "/vendor/bin/uart_launcher"
+args = ["-f", "1", "-p", "/dev/ttyS3"]
+libraries = ["/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap", "/vendor/lib64", "/mnt/system_ext/lib64"]
+user = "bluetooth"
+groups = ["system"]
+env = { LD_PRELOAD = "/skyward/libkmsglog.so" }
+
+# Not oneshot: stock runs it as a daemon that keeps its agent threads alive, so
+# what the WLAN start needs from it is the property, not its ending.
+[[wlan.helper]]
+path = "/vendor/bin/nvram_daemon"
+# v39 log: started at 51.79s; wifi_nvram present by 113.35s.
+# Wait for the real readiness property, not for this daemon to exit.
+ready_timeout_ms = 90000
+ready_property = "vendor.service.wifi_nvram"
+libraries = ["/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap", "/vendor/lib64", "/mnt/system_ext/lib64"]
+user = "root"
+groups = ["system", "radio", "wifi", "audio", "bluetooth", "media"]
+env = { LD_PRELOAD = "/skyward/libkmsglog.so" }
+
+[[wlan.helper]]
+path = "/vendor/bin/wlan_assistant"
+libraries = ["/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap", "/vendor/lib64", "/mnt/system_ext/lib64"]
+user = "wifi"
+groups = ["system", "gps", "inet"]
+env = { LD_PRELOAD = "/skyward/libkmsglog.so" }
+

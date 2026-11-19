@@ -5,7 +5,15 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Where the phone's own partitions keep the table.
-pub const FILES: [&str; 2] = ["/vendor/etc/fstab.qcom", "/odm/etc/fstab.qcom"];
+pub const FILES: [&str; 7] = [
+    "/vendor/etc/fstab.qcom",
+    "/odm/etc/fstab.qcom",
+    "/vendor/etc/fstab.mt6991",
+    "/odm/etc/fstab.mt6991",
+    "/system/etc/recovery.fstab",
+    "/first_stage_ramdisk/fstab.mt6991",
+    "/first_stage_ramdisk/fstab.mt8799",
+];
 
 /// One filesystem the phone knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +47,9 @@ pub fn entries(text: &str) -> Vec<Entry> {
             continue;
         }
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let [device, mount_point, filesystem, options, extras] = fields[..] else { continue };
+        let [device, mount_point, filesystem, options, extras] = fields[..] else {
+            continue;
+        };
         out.push(Entry {
             device: device.to_string(),
             mount_point: mount_point.to_string(),
@@ -67,7 +77,10 @@ fn table() -> Result<Vec<Entry>> {
 
 /// What the phone's own table says about `mount_point`.
 pub fn read(mount_point: &str) -> Result<Vec<Entry>> {
-    Ok(table()?.into_iter().filter(|e| e.mount_point == mount_point).collect())
+    Ok(table()?
+        .into_iter()
+        .filter(|e| e.mount_point == mount_point)
+        .collect())
 }
 
 /// What the phone's own table says about the partition `name`: the first
@@ -78,7 +91,9 @@ pub fn partition(name: &str) -> Result<Option<Entry>> {
 
 /// Whether an entry is of the partition `name`.
 fn names(entry: &Entry, name: &str) -> bool {
-    Path::new(&entry.device).file_name().is_some_and(|n| n == name)
+    Path::new(&entry.device)
+        .file_name()
+        .is_some_and(|n| n == name)
 }
 
 /// The partition an entry names, as it is reachable now: of the booted
@@ -86,13 +101,22 @@ fn names(entry: &Entry, name: &str) -> bool {
 /// at its storage controller by a path a recovery need not have.
 pub fn device(entry: &Entry) -> Result<String> {
     let path = match entry.extras.iter().any(|e| e == "slotselect") {
-        true => format!("{}{}", entry.device, crate::slot_suffix()?.with_context(|| format!("{} is of a slot, and the phone has none", entry.device))?),
+        true => format!(
+            "{}{}",
+            entry.device,
+            crate::slot_suffix()?.with_context(|| format!(
+                "{} is of a slot, and the phone has none",
+                entry.device
+            ))?
+        ),
         false => entry.device.clone(),
     };
     if Path::new(&path).exists() {
         return Ok(path);
     }
-    let name = Path::new(&path).file_name().with_context(|| format!("{path} names no partition"))?;
+    let name = Path::new(&path)
+        .file_name()
+        .with_context(|| format!("{path} names no partition"))?;
     let by_name = Path::new(crate::BY_NAME).join(name);
     if by_name.exists() {
         return Ok(by_name.to_string_lossy().into_owned());
@@ -104,13 +128,19 @@ pub fn device(entry: &Entry) -> Result<String> {
 /// it, and say where. Whatever shows there already, as what an earlier run
 /// of the recovery service mounted does, is taken as it is.
 pub fn mount(name: &str) -> Result<PathBuf> {
-    let entry = partition(name)?.with_context(|| format!("the phone's own table does not mount {name}"))?;
+    let entry =
+        partition(name)?.with_context(|| format!("the phone's own table does not mount {name}"))?;
     let at = PathBuf::from(&entry.mount_point);
     if crate::mount::is_mount_point(&at)? {
         return Ok(at);
     }
     std::fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
-    crate::mount::mount(Path::new(&device(&entry)?), &at, &entry.filesystem, &entry.options)?;
+    crate::mount::mount(
+        Path::new(&device(&entry)?),
+        &at,
+        &entry.filesystem,
+        &entry.options,
+    )?;
     Ok(at)
 }
 
@@ -127,7 +157,10 @@ mod tests {
 
     #[test]
     fn a_mount_point_can_be_named_once_per_filesystem_it_might_hold() {
-        let data: Vec<Entry> = entries(TABLE).into_iter().filter(|e| e.mount_point == "/data").collect();
+        let data: Vec<Entry> = entries(TABLE)
+            .into_iter()
+            .filter(|e| e.mount_point == "/data")
+            .collect();
         assert_eq!(data.len(), 2);
         assert_eq!(data[0].filesystem, "f2fs");
         assert_eq!(data[1].filesystem, "mifs");
@@ -138,16 +171,29 @@ mod tests {
     fn how_the_phone_mounts_a_filesystem_is_kept_apart_from_the_rest() {
         let data = &entries(TABLE)[1];
         assert_eq!(data.options, ["noatime", "discard"]);
-        assert!(data.extras.iter().any(|e| e == "latemount") && !data.extras.iter().any(|e| e == "noatime"));
+        assert!(
+            data.extras.iter().any(|e| e == "latemount")
+                && !data.extras.iter().any(|e| e == "noatime")
+        );
     }
 
     #[test]
     fn what_the_phone_says_about_encryption_is_read_off_the_entry() {
         let data = &entries(TABLE)[1];
-        assert_eq!(data.extra("metadata_encryption"), Some("aes-256-xts:wrappedkey_v0"));
-        assert_eq!(data.extra("keydirectory"), Some("/metadata/vold/metadata_encryption"));
+        assert_eq!(
+            data.extra("metadata_encryption"),
+            Some("aes-256-xts:wrappedkey_v0")
+        );
+        assert_eq!(
+            data.extra("keydirectory"),
+            Some("/metadata/vold/metadata_encryption")
+        );
         assert_eq!(data.extra("quota"), None, "a word on its own has no value");
-        assert_eq!(data.extra("keydir"), None, "a shorter name is another extra");
+        assert_eq!(
+            data.extra("keydir"),
+            None,
+            "a shorter name is another extra"
+        );
     }
 
     #[test]
@@ -156,9 +202,15 @@ mod tests {
             "/dev/block/bootdevice/by-name/modem /vendor/firmware_mnt vfat ro,uid=1000,context=u:object_r:firmware_file:s0 wait,slotselect\n",
         )[0];
         assert!(names(modem, "modem"));
-        assert!(!names(modem, "modemfirmware") && !names(modem, "mode"), "a name is matched whole");
+        assert!(
+            !names(modem, "modemfirmware") && !names(modem, "mode"),
+            "a name is matched whole"
+        );
         assert_eq!(modem.options[0], "ro");
-        assert!(modem.extras.iter().any(|e| e == "slotselect"), "one of each slot");
+        assert!(
+            modem.extras.iter().any(|e| e == "slotselect"),
+            "one of each slot"
+        );
     }
 
     #[test]

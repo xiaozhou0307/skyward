@@ -44,6 +44,12 @@ pub const ENTRIES: &[Entry] = &[
     entry(MOUNT, HOME, Screen::Mount, &["guazai", "gz", "mount", "umount"]),
     entry(["清除数据", "清除資料", "Wipe data"], HOME, Screen::Wipe, &["qingchushuju", "qcsj", "wipe", "format", "geshihua", "gsh"]),
     entry(ADVANCED, HOME, Screen::Advanced, &["gaoji", "gj", "advanced"]),
+    entry(
+        ["验证启动", "驗證開機", "Verified boot"],
+        ADVANCED,
+        Screen::Verified,
+        &["yanzhengqidong", "yzqd", "avb", "avbctl", "verity", "verification", "vbmeta"],
+    ),
     entry(["文件管理", "檔案管理", "File manager"], ADVANCED, Screen::Files, &["wenjianguanli", "wjgl", "files", "file"]),
     entry(["终端", "終端機", "Terminal"], ADVANCED, Screen::Terminal, &["zhongduan", "zd", "terminal", "shell"]),
     entry(

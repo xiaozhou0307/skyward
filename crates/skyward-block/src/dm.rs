@@ -22,7 +22,11 @@ pub enum Target {
     /// [`SNAPSHOT_CHUNK`] sectors that last across restarts. Merging, the
     /// kernel writes the changes into `base` as it goes. `overflow` has the
     /// kernel say when `cow` runs out, where its target can.
-    Snapshot { sectors: u64, base: (u32, u32), cow: (u32, u32), merge: bool, overflow: bool },
+    /// `kept` says whether the changes are recorded in `cow` across restarts
+    /// (`P`), or only while the device is mapped (`N`): a mapping made to
+    /// take writes that are never to reach the partition beneath it keeps
+    /// nothing.
+    Snapshot { sectors: u64, base: (u32, u32), cow: (u32, u32), merge: bool, overflow: bool, kept: bool },
 }
 
 /// The chunk an update's snapshots keep their changes in, in sectors.
@@ -59,8 +63,13 @@ impl Target {
                 }
                 format!("{cipher} {key} 0 {device} 0 {} {}", extra.len(), extra.join(" "))
             }
-            Target::Snapshot { base: (bmaj, bmin), cow: (cmaj, cmin), overflow, .. } => {
-                let mode = if *overflow { "PO" } else { "P" };
+            Target::Snapshot { base: (bmaj, bmin), cow: (cmaj, cmin), overflow, kept, .. } => {
+                let mode = match (kept, overflow) {
+                    (true, false) => "P",
+                    (true, true) => "PO",
+                    (false, false) => "N",
+                    (false, true) => "NO",
+                };
                 format!("{bmaj}:{bmin} {cmaj}:{cmin} {mode} {SNAPSHOT_CHUNK}")
             }
         }
@@ -472,9 +481,9 @@ mod tests {
 
     #[test]
     fn a_snapshot_names_its_devices_and_how_it_keeps_its_changes() {
-        let plain = Target::Snapshot { sectors: 1_780_392, base: (253, 12), cow: (253, 14), merge: false, overflow: true };
+        let plain = Target::Snapshot { sectors: 1_780_392, base: (253, 12), cow: (253, 14), merge: false, overflow: true, kept: true };
         assert_eq!((plain.kind(), plain.params().as_str()), ("snapshot", "253:12 253:14 PO 8"));
-        let merging = Target::Snapshot { sectors: 1_780_392, base: (253, 12), cow: (253, 14), merge: true, overflow: false };
+        let merging = Target::Snapshot { sectors: 1_780_392, base: (253, 12), cow: (253, 14), merge: true, overflow: false, kept: true };
         assert_eq!((merging.kind(), merging.params().as_str()), ("snapshot-merge", "253:12 253:14 P 8"));
         assert_eq!(merging.sectors(), 1_780_392);
     }

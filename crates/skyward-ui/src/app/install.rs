@@ -519,14 +519,16 @@ mod tests {
     }
 
     #[test]
-    fn the_install_page_offers_to_keep_skyward_where_the_phone_has_recovery_partitions() {
+    fn the_install_page_offers_to_put_back_what_the_install_writes_over_wherever_it_is() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Install, &f, &i);
         let offered = |app: &mut App| app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Toggle(Switch::KeepRecovery));
-        assert!(!offered(&mut app), "a phone whose recovery lives in boot");
+        // A phone whose recovery lives in boot keeps its bootloader partition
+        // instead, and the one switch asks for either.
+        assert!(offered(&mut app), "the bootloader's own partition, on a phone without a recovery one");
         app.state.recovery_partitions = true;
         app.refresh();
-        assert!(offered(&mut app));
+        assert!(offered(&mut app), "and this recovery's own partitions where the phone has them");
         assert!(app.state.keep_recovery, "on until turned off");
         tap(&mut app, &f, &i, Action::Toggle(Switch::KeepRecovery));
         assert!(!app.state.keep_recovery);

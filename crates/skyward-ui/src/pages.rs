@@ -3,7 +3,7 @@ use crate::app::{
     FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen,
     SkywardCheck, SkywardEnd, SkywardJob, SkywardStage, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
     BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE,
-    USB_DRIVE_WANTED, WIPES, installs, starting,
+    USB_DRIVE_WANTED, Verified, WIPES, installs, starting,
 };
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -80,6 +80,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::RestoreBackup => restore_backup(cx),
         Screen::BackupJob => backup_job(cx),
         Screen::Advanced => advanced(cx),
+        Screen::Verified => verified(cx),
         Screen::Files => files(cx),
         Screen::FileInfo => file_info(cx),
         Screen::Permissions => permissions(cx),
@@ -174,6 +175,7 @@ const LANGUAGE: Text = ["语言", "語言", "Language"];
 const TIME_ZONE: Text = ["时区", "時區", "Time zone"];
 const LICENSE: Text = ["开源许可", "開放原始碼授權", "Open source licenses"];
 const FONTS: Text = ["界面字体", "介面字型", "UI fonts"];
+const VERIFIED_BOOT: Text = ["验证启动", "驗證開機", "Verified boot"];
 const DUAL_BOOT: Text = ["双系统", "雙系統", "Dual boot"];
 
 /// A canvas for a page `h` tall in the colour `bg`, holding the rows `cx`
@@ -513,7 +515,7 @@ pub fn mount(cx: &Ctx) -> Frame {
 }
 
 /// Who made the recovery, as the About page names them under its version.
-const AUTHOR: &str = "© 2026 Kirk Lin";
+const AUTHOR: &str = "© 2026 Kirk Lin｜酷安@小智乃敲可爱";
 
 /// About this device, modelled on the stock「我的设备」: the wordmark, the
 /// version and its author over a moving colour field, and the summary,
@@ -807,6 +809,15 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
 /// What a slot is shown as where the boot control could not be read.
 const UNREADABLE: Text = ["无法读取", "無法讀取", "Unreadable"];
 
+/// Whether this phone's chip has an emergency download mode: Qualcomm's
+/// EDL, which the chips of other makers do not have.
+fn has_edl(cx: &Ctx) -> bool {
+    cx.info
+        .soc
+        .as_ref()
+        .is_some_and(|soc| soc.en.to_ascii_lowercase().contains("snapdragon"))
+}
+
 /// Reboot target picker with a swipe-to-confirm control.
 pub fn reboot(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
@@ -814,19 +825,26 @@ pub fn reboot(cx: &Ctx) -> Frame {
     let mut out = Vec::new();
     let top = t.m.content_top;
     let mut y = widgets::section_first(&mut c, t, f, top, l.pick(["重启到", "重新啟動到", "Reboot to"]));
-    let rows: Vec<Row> = REBOOT_TARGETS
+    // EDL is Qualcomm's own emergency download mode: a chip of another
+    // maker has no such mode, so the row would only offer a way the phone
+    // does not have.
+    let edl = TARGETS.iter().position(|t| *t == Target::Edl).expect("EDL is among the targets");
+    let rows: Vec<(usize, Row)> = REBOOT_TARGETS
         .iter()
         .enumerate()
+        .filter(|(k, _)| *k != edl || has_edl(cx))
         .map(|(k, &(title, sub))| {
             let r = Row::new(l.pick(title)).trail(Trail::Check(s.reboot == k));
-            match sub {
+            let r = match sub {
                 Some(text) => r.subtitle(l.pick(text)),
                 None => r,
-            }
+            };
+            (k, r)
         })
         .collect();
-    let targets = widgets::list(&mut c, t, f, y, &rows);
-    let picks: Vec<Action> = (0..TARGETS.len()).map(Action::RebootTarget).collect();
+    let bodies: Vec<Row> = rows.iter().map(|(_, r)| *r).collect();
+    let targets = widgets::list(&mut c, t, f, y, &bodies);
+    let picks: Vec<Action> = rows.iter().map(|(k, _)| Action::RebootTarget(*k)).collect();
     out.extend(hits(&targets.rows, &picks));
     y = targets.bottom;
     if let Some(slot) = cx.info.slot {
@@ -927,16 +945,44 @@ pub fn install(cx: &Ctx) -> Frame {
     out.extend(hits(&signature.rows, &[Action::Toggle(Switch::Signature)]));
     let note = l.pick(["开启后，仅安装带有本机官方签名的刷机包。", "開啟後，僅安裝帶有本機官方簽章的刷機包。", "When on, only zips signed with this phone's official keys install."]);
     let mut y = widgets::footnote(&mut c, t, f, signature.bottom, note);
-    if cx.state.recovery_partitions {
-        let row = Row::new(l.pick(["自动重新刷入 Skyward", "自動重新刷入 Skyward", "Flash Skyward again"])).trail(Trail::Switch(cx.state.keep_recovery));
-        let options = widgets::list(&mut c, t, f, y + t.m.card_gap, &[row]);
-        out.extend(hits(&options.rows, &[Action::Toggle(Switch::KeepRecovery)]));
-        let note = l.pick([
-            "开启后，安装系统更新或刷机包时被覆盖的 recovery 分区将重新刷入 Skyward。",
-            "開啟後，安裝系統更新或刷機包時被覆寫的 recovery 分割區將重新刷入 Skyward。",
-            "When on, Skyward goes back into the recovery partitions a system update or flashable zip writes over.",
-        ]);
-        y = widgets::footnote(&mut c, t, f, options.bottom, note);
+    // What an install writes over is put back as it was after it: this
+    // recovery's own partitions on a phone that has them, and the bootloader's
+    // partition on a phone whose bootloader must stay the one it was flashed
+    // with. One switch, because it is one thing asked of the install.
+    let row = match cx.state.recovery_partitions {
+        true => Row::new(l.pick(["自动重新刷入 Skyward", "自動重新刷入 Skyward", "Flash Skyward again"])),
+        false => Row::new(l.pick(["刷机后自动刷回 lk 分区", "刷機後自動刷回 lk 分割區", "Put the lk partition back"])),
+    }
+    .trail(Trail::Switch(cx.state.keep_recovery));
+    let options = widgets::list(&mut c, t, f, y + t.m.card_gap, &[row]);
+    out.extend(hits(&options.rows, &[Action::Toggle(Switch::KeepRecovery)]));
+    let (note, warn) = match cx.state.recovery_partitions {
+        true => (
+            l.pick([
+                "开启后，安装系统更新或刷机包时被覆盖的 recovery 分区将重新刷入 Skyward。",
+                "開啟後，安裝系統更新或刷機包時被覆寫的 recovery 分割區將重新刷入 Skyward。",
+                "When on, Skyward goes back into the recovery partitions a system update or flashable zip writes over.",
+            ]),
+            None,
+        ),
+        false => (
+            l.pick([
+                "开启后，安装前会把 lk 分区原样存一份，安装完成（无论成败）自动刷回原样；备份在 /sdcard/Skyward/lk-backup。",
+                "開啟後，安裝前會把 lk 分割區原樣存一份，安裝完成（無論成敗）自動刷回原樣；備份在 /sdcard/Skyward/lk-backup。",
+                "When on, what the lk partition holds is kept before the install and put back once it ends, whether it worked or not; the copy is in /sdcard/Skyward/lk-backup.",
+            ]),
+            // Kept as it was, the bootloader must still start the system the
+            // package put in, and that is the owner's to check.
+            Some(l.pick([
+                "请确认此lk可以在您要安装的系统中正常启动",
+                "請確認此lk可以在您要安裝的系統中正常啟動",
+                "Check that this lk starts the system you are installing",
+            ])),
+        ),
+    };
+    y = widgets::footnote(&mut c, t, f, options.bottom, note);
+    if let Some(warn) = warn {
+        y = widgets::footnote_warn(&mut c, t, f, y, warn);
     }
     Frame::new(t, fit(c, t, y), out, l.pick(["安装", "安裝", "Install"]), top)
 }
@@ -2207,6 +2253,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Row::new(l.pick(RELABEL)).icon(PURPLE, Icon::Shield),
         Row::new(l.pick(FILESYSTEMS)).icon(RED, Icon::Mount),
         Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
+        Row::new(l.pick(VERIFIED_BOOT)).icon(PURPLE, Icon::Shield).trail(Trail::Value(verified_value(cx))),
         Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(update_value(cx))),
     ]);
     let out = hits(&tools.rows, &[
@@ -2215,9 +2262,76 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Action::Open(Screen::Relabel),
         Action::Open(Screen::Filesystems),
         Action::Open(Screen::Logs),
+        Action::Open(Screen::Verified),
         Action::Open(Screen::Update),
     ]);
     Frame::new(t, c, out, l.pick(ADVANCED), top)
+}
+
+/// What the advanced page says of the bootloader's checks beside their way in.
+fn verified_value(cx: &Ctx) -> &'static str {
+    let l = cx.state.lang;
+    match cx.state.verified {
+        Some(Ok(v)) if v.verification && v.verity => l.pick(["已开启", "已開啟", "On"]),
+        Some(Ok(_)) => l.pick(["已关闭", "已關閉", "Off"]),
+        _ => "",
+    }
+}
+
+const VERIFICATION: Text = ["验证启动签名", "驗證開機簽章", "Signature checks"];
+const VERIFICATION_HINT: Text = ["vbmeta 链的签名；关闭后可启动第三方镜像", "vbmeta 鏈的簽章；關閉後可啟動第三方映像檔", "The vbmeta chain's signatures; off, an unsigned image starts"];
+const VERITY: Text = ["dm-verity 校验", "dm-verity 校驗", "dm-verity"];
+const VERITY_HINT: Text = ["系统分区的哈希树；改了系统分区也能起来", "系統分割區的雜湊樹；改了系統分割區也能起來", "The system partitions' hash trees; off, they may differ from the record"];
+
+/// What the bootloader still checks of what it boots, and the two switches
+/// that stop it: what an install script does with `avbctl` before it writes a
+/// system the phone's own key did not sign.
+pub fn verified(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let title = l.pick(VERIFIED_BOOT);
+    let what = l.pick([
+        "关闭后，bootloader 不再校验系统镜像的签名和哈希，可以启动官方密钥之外的第三方系统。改动写入当前槽的 vbmeta，重启后生效。",
+        "關閉後，bootloader 不再校驗系統映像檔的簽章和雜湊，可以啟動官方金鑰之外的第三方系統。改動寫入目前槽的 vbmeta，重新啟動後生效。",
+        "Turned off, the bootloader stops checking the signatures and hashes of what it starts, so a system the phone's own key did not sign can start. The change is written to this slot's vbmeta, and takes effect after a restart.",
+    ]);
+    let mut y = widgets::paragraph(&mut c, t, f, top, what);
+    // The switches show on a phone whose checks could not be read too: what
+    // was not read is then shown as a phone boots, both on, and the note
+    // says the reading failed, so the way to stop them is never closed.
+    let shown = match &s.verified {
+        Some(Ok(v)) => *v,
+        None => {
+            y = widgets::footnote(&mut c, t, f, y, l.pick(["正在读取…", "正在讀取…", "Reading…"]));
+            Verified { verification: true, verity: true }
+        }
+        Some(Err(why)) => {
+            y = widgets::footnote(&mut c, t, f, y, why);
+            Verified { verification: true, verity: true }
+        }
+    };
+    let rows = widgets::list(&mut c, t, f, y + t.m.card_gap, &[
+        Row::new(l.pick(VERIFICATION)).subtitle(l.pick(VERIFICATION_HINT)).trail(Trail::Switch(shown.verification)),
+        Row::new(l.pick(VERITY)).subtitle(l.pick(VERITY_HINT)).trail(Trail::Switch(shown.verity)),
+    ]);
+    out.extend(hits(&rows.rows, &[Action::Toggle(Switch::Verification), Action::Toggle(Switch::Verity)]));
+    let note = l.pick([
+        "锁定的 bootloader 不会启动 vbmeta 被改过的槽；本机已解锁，可以直接改。关闭后系统更新会校验失败，要恢复就再打开。",
+        "鎖定的 bootloader 不會啟動 vbmeta 被改過的槽；本機已解鎖，可以直接改。關閉後系統更新會校驗失敗，要回復就再開啟。",
+        "A locked bootloader does not start a slot whose vbmeta has been changed; this phone is unlocked. With the checks off, system updates fail theirs; turn them back on to restore them.",
+    ]);
+    let warned = widgets::footnote(&mut c, t, f, rows.bottom, note);
+    // Some MediaTek chips answer a vbmeta that no longer matches by making
+    // the data partition unreadable, so the warning comes before the switch
+    // is touched.
+    widgets::footnote(&mut c, t, f, warned, l.pick([
+        "天玑部分处理器关闭验证启动签名需要清除数据，建议提前做好备份！",
+        "天璣部分處理器關閉驗證開機簽章需要清除資料，建議提前做好備份！",
+        "On some MediaTek chips, turning the signature checks off needs the data partition wiped: back up first!",
+    ]));
+    Frame::new(t, c, out, title, top)
 }
 
 const RELABEL: Text = ["修复 SELinux 上下文", "修復 SELinux 上下文", "Fix SELinux contexts"];
@@ -2604,6 +2718,23 @@ pub fn update(cx: &Ctx) -> Frame {
 /// What downloading or checking for updates needs first, while the phone
 /// has joined no network that reaches the internet.
 const WLAN_FIRST: Text = ["需先连接 WLAN", "需先連接 Wi-Fi", "Connect to Wi-Fi first"];
+/// What a page says where it needs the network on a recovery that has none at
+/// all: some kernels refuse the modules the WLAN is built on, and then the
+/// package has to come in by hand.
+const NO_NETWORK: Text = [
+    "这台机器的 recovery 不上网：把安装包放进手机，用「安装」刷入",
+    "這台機器的 recovery 不上網：把安裝包放進手機，用「安裝」刷入",
+    "This recovery does not use the network: put the package on the phone and use Install",
+];
+
+/// The note a page gives where it needs the network: that the WLAN is off, or,
+/// on a recovery without one, that the package comes in by hand.
+fn offline_note(cx: &Ctx) -> Text {
+    match cx.state.wlan.is_none() {
+        true => NO_NETWORK,
+        false => WLAN_FIRST,
+    }
+}
 const CHECKING: Text = ["正在检查更新", "正在檢查更新", "Checking for updates"];
 const CHECK_FOR_UPDATES: Text = ["检查更新", "檢查更新", "Check for updates"];
 const DOWNLOADING: Text = ["正在下载", "正在下載", "Downloading"];
@@ -2620,7 +2751,7 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         other => {
             let mut row = Row::new(l.pick(CHECK_FOR_UPDATES));
             if !s.online() {
-                row = row.subtitle(l.pick(WLAN_FIRST));
+                row = row.subtitle(l.pick(offline_note(cx)));
             }
             let check = widgets::list(c, t, f, y, &[row]);
             out.extend(hits(&check.rows, &[Action::CheckUpdate]));
@@ -2680,7 +2811,7 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
             let sub = if !s.data.storage_open() {
                 Some(l.pick(DECRYPT_NEEDED))
             } else if !s.online() {
-                Some(l.pick(WLAN_FIRST))
+                Some(l.pick(offline_note(cx)))
             } else {
                 had.as_deref()
             };
@@ -2765,7 +2896,7 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         other => {
             let mut row = Row::new(l.pick(CHECK_FOR_UPDATES));
             if !s.online() {
-                row = row.subtitle(l.pick(WLAN_FIRST));
+                row = row.subtitle(l.pick(offline_note(cx)));
             }
             let check = widgets::list(c, t, f, y, &[row]);
             out.extend(hits(&check.rows, &[Action::CheckSkyward]));
@@ -2862,7 +2993,7 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
             }
             let mut row = Row::new(l.pick(["下载并更新", "下載並更新", "Download and update"]));
             if !s.online() {
-                row = row.subtitle(l.pick(WLAN_FIRST));
+                row = row.subtitle(l.pick(offline_note(cx)));
             }
             let update = widgets::list(c, t, f, y + gap, &[row]);
             out.extend(hits(&update.rows, &[Action::UpdateSkyward]));
@@ -2875,7 +3006,20 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
 /// the networks in range, strongest first.
 pub fn wlan(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let w = s.wlan.as_ref().expect("the WLAN page shows on a phone whose WLAN is brought up");
+    // A page cannot be reached on a phone whose WLAN is not brought up, and
+    // yet it is drawn of nothing rather than taken down: a page that panics
+    // leaves the screen showing whatever was there before.
+    let Some(w) = s.wlan.as_ref() else {
+        let mut c = page(cx);
+        let title = l.pick(WLAN);
+        let note = l.pick([
+            "这台机器的 recovery 不联网：把安装包放进手机，用「安装」刷入。",
+            "這台機器的 recovery 不上網：把安裝包放進手機，用「安裝」刷入。",
+            "This recovery does not use the network: put the package on the phone and use Install.",
+        ]);
+        widgets::footnote(&mut c, t, f, t.m.content_top, note);
+        return Frame::new(t, c, Vec::new(), title, t.m.content_top);
+    };
     let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;

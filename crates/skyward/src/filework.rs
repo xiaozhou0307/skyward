@@ -6,20 +6,34 @@ use anyhow::Result;
 use skyward_files::{Cancelled, Clash, Ownership, Progress, Relabeling};
 use std::os::fd::RawFd;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// The most often how far the work has come is told.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 pub enum Task {
-    Copy { from: PathBuf, into: PathBuf, clash: Clash, ownership: Ownership },
-    Move { from: PathBuf, into: PathBuf, clash: Clash, ownership: Ownership },
-    Delete { path: PathBuf },
+    Copy {
+        from: PathBuf,
+        into: PathBuf,
+        clash: Clash,
+        ownership: Ownership,
+    },
+    Move {
+        from: PathBuf,
+        into: PathBuf,
+        clash: Clash,
+        ownership: Ownership,
+    },
+    Delete {
+        path: PathBuf,
+    },
     /// Give the data partition's files the labels the rules in `rules`
     /// give them.
-    Relabel { rules: Vec<PathBuf> },
+    Relabel {
+        rules: Vec<PathBuf>,
+    },
 }
 
 #[derive(Clone)]
@@ -59,12 +73,24 @@ impl Worker {
             };
             let mut progress = |p: Progress| report(Event::Progress(p));
             let ended = match task {
-                Task::Copy { from, into, clash, ownership } => skyward_files::copy(&[from], &into, clash, ownership, &stop, &mut progress),
-                Task::Move { from, into, clash, ownership } => {
+                Task::Copy {
+                    from,
+                    into,
+                    clash,
+                    ownership,
+                } => skyward_files::copy(&[from], &into, clash, ownership, &stop, &mut progress),
+                Task::Move {
+                    from,
+                    into,
+                    clash,
+                    ownership,
+                } => {
                     skyward_files::move_into(&[from], &into, clash, ownership, &stop, &mut progress)
                 }
                 Task::Delete { path } => skyward_files::delete(&[path], &stop, &mut progress),
-                Task::Relabel { rules } => relabel::run(&rules, &stop, &mut |r| report(Event::Relabeling(r))),
+                Task::Relabel { rules } => {
+                    relabel::run(&rules, &stop, &mut |r| report(Event::Relabeling(r)))
+                }
             };
             // Work that stops or fails shows how far it came in the end.
             if let Some(event) = last {

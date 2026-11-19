@@ -57,6 +57,13 @@ pub fn run(name: &OsStr, args: &[OsString]) -> Option<i32> {
     Some(command(args, &mut Io { input: &mut input, output: &mut output, errors: &mut errors }))
 }
 
+/// The `avbctl` command as the recovery's own pages run it: its arguments,
+/// reading and writing through the streams given rather than the process's
+/// own, so that a page can show what it said and what went wrong.
+pub fn run_avbctl(args: &[OsString], input: &mut dyn Read, output: &mut dyn Write, errors: &mut dyn Write) -> i32 {
+    avbctl::run(args, &mut Io { input, output, errors })
+}
+
 /// Where copying stopped.
 #[derive(Debug)]
 enum Failed {

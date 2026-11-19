@@ -90,6 +90,9 @@ pub struct State {
     /// The systems, as the runtime last read them, or why it could not;
     /// none until it has.
     pub systems: Option<Result<Overview, String>>,
+    /// What the bootloader still checks of what it boots, as the runtime
+    /// last read it, or why it could not; none until it has.
+    pub verified: Option<Result<Verified, String>>,
     /// The system picked on the systems page to start next; with none
     /// picked, the page shows the one that starts.
     pub system_pick: Option<Who>,
@@ -225,6 +228,7 @@ impl Default for State {
             next_slot: None,
             dual_boot: false,
             systems: None,
+            verified: None,
             system_pick: None,
             systems_work: None,
             system_notice: None,
@@ -350,4 +354,15 @@ impl State {
             _ => true,
         }
     }
+}
+
+/// What the bootloader still checks of what it boots: the two checks an
+/// install script stops with `avbctl` before it writes a system the phone's
+/// own key did not sign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Verified {
+    /// The signatures of the vbmeta chain.
+    pub verification: bool,
+    /// The dm-verity hash trees over the system's partitions.
+    pub verity: bool,
 }

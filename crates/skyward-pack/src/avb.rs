@@ -6,7 +6,7 @@
 //! anything but a vbmeta image, as a stock footer left behind an image
 //! written over the start of the partition does.
 
-use anyhow::{ensure, Result};
+use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
 /// The unit avbtool lays an image and its vbmeta image out in.
@@ -19,13 +19,40 @@ const RELEASE: &[u8] = b"skyward-pack";
 /// `image` grown to fill a `partition_size`-byte partition named
 /// `partition`: the image, its vbmeta image from the next block on, and the
 /// footer locating that in the partition's last bytes, zeros between.
-pub fn footed(image: &[u8], partition: &str, partition_size: usize, salt: &[u8]) -> Result<Vec<u8>> {
-    let digest = Sha256::new().chain_update(salt).chain_update(image).finalize();
-    let vbmeta = vbmeta(&hash_descriptor(image.len() as u64, partition, salt, &digest));
-    let offset = image.len().next_multiple_of(BLOCK);
-    let end = offset + vbmeta.len().next_multiple_of(BLOCK);
+pub fn footed(
+    image: &[u8],
+    partition: &str,
+    partition_size: usize,
+    salt: &[u8],
+) -> Result<Vec<u8>> {
     ensure!(
-        end + BLOCK <= partition_size,
+        image.len() <= partition_size,
+        "image is larger than its partition"
+    );
+    let digest = Sha256::new()
+        .chain_update(salt)
+        .chain_update(image)
+        .finalize();
+    let vbmeta = vbmeta(&hash_descriptor(
+        image.len() as u64,
+        partition,
+        salt,
+        &digest,
+    ));
+    let offset = image
+        .len()
+        .checked_add(BLOCK - 1)
+        .context("AVB alignment overflow")?
+        / BLOCK
+        * BLOCK;
+    let end = offset
+        .checked_add(vbmeta.len().next_multiple_of(BLOCK))
+        .context("AVB footer range overflow")?;
+    let footer_at = end
+        .checked_add(BLOCK)
+        .context("AVB footer range overflow")?;
+    ensure!(
+        footer_at <= partition_size,
         "a {}-byte image and its vbmeta image do not fit a {partition_size}-byte {partition} partition beside its footer",
         image.len()
     );
@@ -126,7 +153,10 @@ mod tests {
     #[test]
     fn an_image_that_leaves_no_room_for_its_vbmeta_and_footer_is_refused() {
         let image = vec![b'S'; 8192];
-        assert!(footed(&image, "recovery", 16384, &SALT).is_ok(), "a block each for the vbmeta image and the footer");
+        assert!(
+            footed(&image, "recovery", 16384, &SALT).is_ok(),
+            "a block each for the vbmeta image and the footer"
+        );
         assert!(footed(&image, "recovery", 12288, &SALT).is_err());
     }
 }

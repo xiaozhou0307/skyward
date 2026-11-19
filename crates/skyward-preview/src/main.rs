@@ -192,6 +192,26 @@ fn main() -> Result<()> {
         println!("wrote {}", path.display());
     }
 
+    // The page the recovery shows while it brings the phone up: the flowing
+    // light, the name under it, and the way on once it is up.
+    for (name, note, ready, time) in [
+        ("00-splash-opening0", "正在挂载分区…", false, 0.0),
+        ("00-splash-opening1", "正在挂载分区…", false, 0.5),
+        ("00-splash-opening2", "正在加载内核模块与服务…", false, 1.2),
+        ("00-splash-waiting", "正在加载内核模块…", false, 2.0),
+        ("00-splash-ready", "已就绪", true, 6.5),
+        ("00-splash-later", "已就绪", true, 40.0),
+        ("00-splash-later2", "已就绪", true, 95.0),
+    ] {
+        let t = Theme::light(w, h, ppd);
+        let title = fonts.face(skyward_ui::splash::TITLE_WGHT)?;
+        let mut c = Canvas::new(w, h);
+        skyward_ui::splash::draw(&mut c, &t, &fonts, &title, lang, time, note, ready);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
     // The screen kept on, which warns about burn-in.
     let mut app = opened(Screen::ScreenOff, w, h, ppd);
     app.state.dark = true;

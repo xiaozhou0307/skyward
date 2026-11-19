@@ -28,8 +28,14 @@ pub struct Encryption {
 impl Encryption {
     /// Read what an entry of the phone's own table says.
     pub fn of(entry: &Entry) -> Result<Encryption> {
-        let said = entry.extra("metadata_encryption").context("the phone says its data partition is not encrypted whole")?;
+        // Android permits an empty metadata options string: a keydirectory
+        // still identifies metadata encryption, with AES-256-XTS as default.
+        let said = entry.extra("metadata_encryption").or_else(|| {
+            entry.extra("keydirectory").filter(|dir| !dir.is_empty()).map(|_| "")
+        }).context("the phone says its data partition is not encrypted whole")?;
         let (name, rest) = said.split_once(':').unwrap_or((said, ""));
+        let name = if name.is_empty() { "aes-256-xts" } else { name };
+        anyhow::ensure!(rest.is_empty() || rest == "wrappedkey_v0", "unsupported metadata encryption flag {rest}");
         let cipher = CIPHERS
             .iter()
             .find_map(|(theirs, kernels)| (*theirs == name).then_some(*kernels))
@@ -40,8 +46,28 @@ impl Encryption {
 
 /// Where the phone keeps the key for the filesystem an entry describes.
 pub fn key_dir(entry: &Entry) -> Result<PathBuf> {
-    let dir = entry.extra("keydirectory").context("the phone says where the key for its data partition is not")?;
+    // Where the phone's table names no directory, the platform keeps the key
+    // in the place Android's own vold looks: the metadata partition's
+    // encryption store, which is the one this build of the hardware uses.
+    let dir = entry
+        .extra("keydirectory")
+        .filter(|dir| !dir.is_empty())
+        .unwrap_or(DEFAULT_KEY_DIRECTORY);
     Ok(Path::new(dir).join(KEY_DIR))
+}
+
+/// Where Android's vold keeps the key a data partition is encrypted with,
+/// under the metadata partition, where the table names no directory.
+pub const DEFAULT_KEY_DIRECTORY: &str = "/metadata/vold/metadata_encryption";
+
+/// What to try where the entry says nothing at all of how the whole of the
+/// partition is encrypted: the cipher every phone of this platform uses,
+/// first with the key only the storage hardware can unwrap and then with the
+/// key as the store keeps it. Which one it is, the partition says by
+/// holding a filesystem behind it.
+pub fn unnamed() -> [Encryption; 2] {
+    let cipher = CIPHERS[0].1.to_string();
+    [Encryption { cipher: cipher.clone(), wrapped: true }, Encryption { cipher, wrapped: false }]
 }
 
 /// Build the device-mapper target that reads the partition through the
@@ -79,10 +105,32 @@ mod tests {
     }
 
     #[test]
+    fn keydirectory_without_options_uses_androids_default_metadata_cipher() {
+        let e = entry("fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized,keydirectory=/metadata/vold/metadata_encryption,fsverity");
+        assert_eq!(Encryption::of(&e).unwrap(), Encryption { cipher: "aes-xts-plain64".into(), wrapped: false });
+        assert_eq!(Encryption::of(&entry("metadata_encryption=" )).unwrap(), Encryption { cipher: "aes-xts-plain64".into(), wrapped: false });
+        assert!(Encryption::of(&entry("fileencryption=aes-256-xts:aes-256-cts:v2")).is_err());
+        assert!(Encryption::of(&entry("keydirectory=")).is_err());
+        assert!(Encryption::of(&entry("metadata_encryption=aes-256-xts:unknown")).is_err());
+    }
+
+    #[test]
     fn a_cipher_or_a_key_the_phone_does_not_name_is_an_error() {
         assert!(Encryption::of(&entry("quota")).is_err());
         assert!(Encryption::of(&entry("metadata_encryption=rot13")).is_err());
-        assert!(key_dir(&entry("quota")).is_err());
+    }
+
+    #[test]
+    fn an_entry_that_names_no_key_directory_is_read_at_the_one_android_keeps() {
+        // This platform's phones leave the directory out of the table, and
+        // vold keeps the key at the same place Android's own does.
+        assert_eq!(
+            key_dir(&entry("quota")).unwrap(),
+            Path::new(DEFAULT_KEY_DIRECTORY).join(KEY_DIR),
+            "the metadata encryption store is where the key is"
+        );
+        assert_eq!(key_dir(&entry("keydirectory=")).unwrap(), Path::new(DEFAULT_KEY_DIRECTORY).join(KEY_DIR));
+        assert_eq!(key_dir(&entry("keydirectory=/metadata/vold/other")).unwrap(), Path::new("/metadata/vold/other/key"));
     }
 
     #[test]

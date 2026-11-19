@@ -14,7 +14,11 @@ pub enum Job {
     Open,
     /// Open the own files of `user` with what they entered at their screen
     /// lock; `closed` are the users whose own files are still closed.
-    Unlock { closed: Vec<Closed>, user: u32, credential: Vec<u8> },
+    Unlock {
+        closed: Vec<Closed>,
+        user: u32,
+        credential: Vec<u8>,
+    },
 }
 
 /// How a job ended: what it opened, or why it did not.
@@ -35,9 +39,13 @@ impl Decryptor {
         let worker = Worker::start("decrypt", move |tell| {
             tell.tell(match job {
                 Job::Open => Ended::Opened(with_key_service(data::open_without_credential)),
-                Job::Unlock { closed, user, credential } => {
-                    Ended::Unlocked(with_key_service(|service| data::unlock(service, &closed, user, &credential)))
-                }
+                Job::Unlock {
+                    closed,
+                    user,
+                    credential,
+                } => Ended::Unlocked(with_key_service(|service| {
+                    data::unlock(service, &closed, user, &credential)
+                })),
             });
         })?;
         Ok(Decryptor { worker })

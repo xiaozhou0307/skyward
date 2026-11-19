@@ -251,10 +251,28 @@ fn receive(ctx: &mut Context, mut conn: Connection<Endpoints>, offer: Offer, res
         finish(&mut conn, ending(&outcome));
         return (outcome, conn);
     }
+    // What the bootloader's own partition holds is kept before the package
+    // runs, and put back after it however the package ended: a phone whose
+    // bootloader must stay the one it was flashed with is one the package's
+    // lk.img may not be what it is left with.
+    let guard = match crate::lk::protect(ctx.options.keep) {
+        Ok(guard) => guard,
+        Err(e) => {
+            let outcome = failed(e.context("keep what the bootloader partition holds"));
+            finish(&mut conn, ending(&outcome));
+            return (outcome, conn);
+        }
+    };
+    if let Some(guard) = &guard {
+        let _ = kmsg(&format!("install: what the bootloader partition holds is kept before this install: {:?}", guard.names()));
+    }
     ctx.send(Event::Checking { size: offer.size });
     let mounted = match fuse::mount(offer) {
         Ok(mounted) => mounted,
         Err(e) => {
+            if let Err(e) = crate::lk::release(guard) {
+                let _ = kmsg(&format!("install: the bootloader partition is not as it was: {e:#}"));
+            }
             let outcome = failed(e);
             finish(&mut conn, ending(&outcome));
             return (outcome, conn);
@@ -262,6 +280,9 @@ fn receive(ctx: &mut Context, mut conn: Connection<Endpoints>, offer: Offer, res
     };
     let mount = mounted.serve(conn);
     let done = install(ctx, &mount, offer.size).unwrap_or_else(Done::Error);
+    if let Err(e) = crate::lk::release(guard) {
+        let _ = kmsg(&format!("install: the bootloader partition is not as it was: {e:#}"));
+    }
     let (mut conn, served) = mount.unmount();
     let outcome = conclude(done, served, ctx.origin);
     finish(&mut conn, ending(&outcome));

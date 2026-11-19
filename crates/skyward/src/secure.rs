@@ -2,7 +2,7 @@
 //! recovery: the libraries their partitions were built against, and a
 //! service directory that knows the phone describes them.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,12 @@ use std::time::{Duration, Instant};
 
 /// Where a phone keeps the bundles of shared libraries its own partitions
 /// were built against.
-const BUNDLE_DIRS: [&str; 4] = ["/mnt/system_ext/apex", "/mnt/system/system/apex", "/mnt/product/apex", "/vendor/apex"];
+const BUNDLE_DIRS: [&str; 4] = [
+    "/mnt/system_ext/apex",
+    "/mnt/system/system/apex",
+    "/mnt/product/apex",
+    "/vendor/apex",
+];
 
 /// The file inside a bundle that holds its filesystem. It is stored whole,
 /// so the bundle can be opened where it lies.
@@ -104,7 +109,8 @@ pub fn prepare_hardware_directory(wanted: &[String]) -> Result<()> {
     if loader.exists() {
         fs::remove_file(loader).with_context(|| format!("take away {}", loader.display()))?;
     }
-    std::os::unix::fs::symlink(&from, loader).with_context(|| format!("point {} at {}", loader.display(), from.display()))?;
+    std::os::unix::fs::symlink(&from, loader)
+        .with_context(|| format!("point {} at {}", loader.display(), from.display()))?;
     let driver = Path::new(HARDWARE_DRIVER);
     if !driver.exists() {
         std::os::unix::fs::symlink(HARDWARE_DRIVER_NODE, driver)
@@ -122,12 +128,20 @@ pub fn prepare_hardware_directory(wanted: &[String]) -> Result<()> {
     // The directory reads both of these as the user its init script names,
     // and what the recovery makes under its own umask is root's alone: they
     // are given the modes the system's own copies have.
-    fs::set_permissions(RECOVERY_LABELS, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .with_context(|| format!("open {RECOVERY_LABELS} to every user"))?;
-    fs::copy(from, &into).with_context(|| format!("copy {} to {}", from.display(), into.display()))?;
-    fs::write(RECOVERY_MANIFEST, describe_hardware(wanted)?).with_context(|| format!("write {RECOVERY_MANIFEST}"))?;
-    fs::set_permissions(RECOVERY_MANIFEST, std::os::unix::fs::PermissionsExt::from_mode(0o644))
-        .with_context(|| format!("let every user read {RECOVERY_MANIFEST}"))?;
+    fs::set_permissions(
+        RECOVERY_LABELS,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .with_context(|| format!("open {RECOVERY_LABELS} to every user"))?;
+    fs::copy(from, &into)
+        .with_context(|| format!("copy {} to {}", from.display(), into.display()))?;
+    fs::write(RECOVERY_MANIFEST, describe_hardware(wanted)?)
+        .with_context(|| format!("write {RECOVERY_MANIFEST}"))?;
+    fs::set_permissions(
+        RECOVERY_MANIFEST,
+        std::os::unix::fs::PermissionsExt::from_mode(0o644),
+    )
+    .with_context(|| format!("let every user read {RECOVERY_MANIFEST}"))?;
     // The directory turns itself off when it cannot find its own
     // description, and a run of it before this was written may have left
     // that behind.
@@ -159,7 +173,9 @@ fn describe_hardware(wanted: &[String]) -> Result<String> {
 /// against and give the directory they are in. A phone whose partitions
 /// need no bundle has none to open.
 pub fn libraries() -> Result<Option<PathBuf>> {
-    let Some(version) = skyward_sys::prop(VENDOR_INTERFACE) else { return Ok(None) };
+    let Some(version) = skyward_sys::prop(VENDOR_INTERFACE) else {
+        return Ok(None);
+    };
     Ok(bundle(&format!("com.android.vndk.v{version}"))?.map(|at| at.join(BUNDLE_LIBS)))
 }
 
@@ -171,7 +187,11 @@ fn bundle(name: &str) -> Result<Option<PathBuf>> {
     if skyward_block::mount::is_mount_point(&at)? {
         return Ok(Some(at));
     }
-    let Some(file) = BUNDLE_DIRS.iter().map(|d| Path::new(d).join(format!("{name}.apex"))).find(|p| p.is_file()) else {
+    let Some(file) = BUNDLE_DIRS
+        .iter()
+        .map(|d| Path::new(d).join(format!("{name}.apex")))
+        .find(|p| p.is_file())
+    else {
         return Ok(None);
     };
     let (offset, length) = image(&file)?;
@@ -184,12 +204,20 @@ fn bundle(name: &str) -> Result<Option<PathBuf>> {
 /// Where the filesystem lies inside a bundle.
 fn image(file: &Path) -> Result<(u64, u64)> {
     let f = fs::File::open(file).with_context(|| format!("open {}", file.display()))?;
-    let mut bundle = zip::ZipArchive::new(f).with_context(|| format!("read what is in {}", file.display()))?;
-    let entry = bundle.by_name(BUNDLE_IMAGE).with_context(|| format!("{} holds no {BUNDLE_IMAGE}", file.display()))?;
+    let mut bundle =
+        zip::ZipArchive::new(f).with_context(|| format!("read what is in {}", file.display()))?;
+    let entry = bundle
+        .by_name(BUNDLE_IMAGE)
+        .with_context(|| format!("{} holds no {BUNDLE_IMAGE}", file.display()))?;
     if entry.compression() != zip::CompressionMethod::Stored {
-        anyhow::bail!("{} keeps its {BUNDLE_IMAGE} packed, which cannot be opened where it lies", file.display());
+        anyhow::bail!(
+            "{} keeps its {BUNDLE_IMAGE} packed, which cannot be opened where it lies",
+            file.display()
+        );
     }
-    let start = entry.data_start().with_context(|| format!("{BUNDLE_IMAGE} in {} says where it is not", file.display()))?;
+    let start = entry
+        .data_start()
+        .with_context(|| format!("{BUNDLE_IMAGE} in {} says where it is not", file.display()))?;
     Ok((start, entry.size()))
 }
 
@@ -216,17 +244,35 @@ pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
     // already, as they do of the boot control on some phones, is left out.
     let mut shipped = vec![PathBuf::from(RECOVERY_MANIFEST)];
     for entry in fs::read_dir(into).with_context(|| format!("read {}", into.display()))? {
-        shipped.push(entry.with_context(|| format!("read {}", into.display()))?.path());
+        shipped.push(
+            entry
+                .with_context(|| format!("read {}", into.display()))?
+                .path(),
+        );
     }
     let mut told = Vec::new();
-    for path in shipped.iter().filter(|p| **p != to && p.extension().is_some_and(|e| e == "xml") && p.is_file()) {
+    for path in shipped
+        .iter()
+        .filter(|p| **p != to && p.extension().is_some_and(|e| e == "xml") && p.is_file())
+    {
         let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        let services = skyward_programs::description::read(&text).with_context(|| format!("read {}", path.display()))?;
-        told.extend(services.iter().map(skyward_programs::description::Described::name));
+        let services = skyward_programs::description::read(&text)
+            .with_context(|| format!("read {}", path.display()))?;
+        told.extend(
+            services
+                .iter()
+                .map(skyward_programs::description::Described::name),
+        );
     }
-    let untold: Vec<String> = wanted.iter().filter(|name| !told.contains(name)).cloned().collect();
-    fs::write(&to, skyward_programs::description::offering(&untold)?).with_context(|| format!("write {}", to.display()))?;
-    fs::set_permissions(&to, std::os::unix::fs::PermissionsExt::from_mode(0o644)).with_context(|| format!("let every user read {}", to.display()))?;
+    let untold: Vec<String> = wanted
+        .iter()
+        .filter(|name| !told.contains(name))
+        .cloned()
+        .collect();
+    fs::write(&to, skyward_programs::description::offering(&untold)?)
+        .with_context(|| format!("write {}", to.display()))?;
+    fs::set_permissions(&to, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+        .with_context(|| format!("let every user read {}", to.display()))?;
     let rewritten = say_framework(into)?;
     // The directory reads the descriptions once and keeps to them, so one
     // that read them before these were written has to start again to see
@@ -237,7 +283,9 @@ pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
     // The first it does not know described settles that it starts again.
     let mut unknown = false;
     for name in wanted {
-        if !skyward_binder::service::declared(&binder, name).with_context(|| format!("ask the service directory whether it knows {name} described"))? {
+        if !skyward_binder::service::declared(&binder, name).with_context(|| {
+            format!("ask the service directory whether it knows {name} described")
+        })? {
             unknown = true;
             break;
         }
@@ -249,7 +297,8 @@ pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
         // whenever its directory restarts.
         let registered = registered()?;
         let was = crate::services::running(DIRECTORY_PROGRAM);
-        skyward_sys::set_prop("ctl.restart", DIRECTORY_SERVICE).context("have the service directory start again")?;
+        skyward_sys::set_prop("ctl.restart", DIRECTORY_SERVICE)
+            .context("have the service directory start again")?;
         answering_again(was)?;
         register_again(&registered)?;
     }
@@ -259,13 +308,18 @@ pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
 /// What has registered with the service directory, each with the init
 /// service whose process serves it; the directory's own entry is left out.
 fn registered() -> Result<Vec<(String, String)>> {
-    let Some(directory) = crate::services::running(DIRECTORY_PROGRAM) else { return Ok(Vec::new()) };
+    let Some(directory) = crate::services::running(DIRECTORY_PROGRAM) else {
+        return Ok(Vec::new());
+    };
     let binder = skyward_binder::driver::Binder::open()?;
     let started = skyward_sys::props(SERVICE_PIDS);
     let mut out = Vec::new();
     for name in skyward_binder::service::names(&binder)? {
-        let Some(service) = skyward_binder::service::find(&binder, &name)? else { continue };
-        let pid = skyward_binder::service::pid(&service).with_context(|| format!("ask which process serves {name}"))?;
+        let Some(service) = skyward_binder::service::find(&binder, &name)? else {
+            continue;
+        };
+        let pid = skyward_binder::service::pid(&service)
+            .with_context(|| format!("ask which process serves {name}"))?;
         if pid == directory {
             continue;
         }
@@ -283,19 +337,27 @@ fn registered() -> Result<Vec<(String, String)>> {
 /// out the pause it keeps between two starts of a service, seconds after
 /// the service last started; stopping it and starting it does not.
 fn register_again(registered: &[(String, String)]) -> Result<()> {
-    let services: BTreeSet<&str> = registered.iter().map(|(_, service)| service.as_str()).collect();
+    let services: BTreeSet<&str> = registered
+        .iter()
+        .map(|(_, service)| service.as_str())
+        .collect();
     for service in &services {
-        skyward_sys::set_prop("ctl.stop", service).with_context(|| format!("have init stop {service}"))?;
+        skyward_sys::set_prop("ctl.stop", service)
+            .with_context(|| format!("have init stop {service}"))?;
     }
     for service in &services {
         skyward_sys::wait_prop(&format!("init.svc.{service}"), "stopped", STOP_TIMEOUT)?;
-        skyward_sys::set_prop("ctl.start", service).with_context(|| format!("have init start {service} again"))?;
+        skyward_sys::set_prop("ctl.start", service)
+            .with_context(|| format!("have init start {service} again"))?;
     }
     let binder = skyward_binder::driver::Binder::open()?;
     let until = Instant::now() + REGISTER_TIMEOUT;
     for (name, service) in registered {
         while skyward_binder::service::find(&binder, name)?.is_none() {
-            ensure!(Instant::now() < until, "{name} has not registered again since init started {service} again");
+            ensure!(
+                Instant::now() < until,
+                "{name} has not registered again since init started {service} again"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         skyward_sys::kmsg(&format!("{name} registered again from {service}"))?;
@@ -309,7 +371,8 @@ fn register_again(registered: &[(String, String)]) -> Result<()> {
 /// the two readers drops the whole set over one description that says it
 /// is the phone's.
 fn as_framework(text: &str) -> String {
-    text.replace("type=\"device\"", "type=\"framework\"").replace("type='device'", "type='framework'")
+    text.replace("type=\"device\"", "type=\"framework\"")
+        .replace("type='device'", "type='framework'")
 }
 
 /// Say the same of the descriptions already there, which a recovery ships
@@ -317,7 +380,9 @@ fn as_framework(text: &str) -> String {
 fn say_framework(dir: &Path) -> Result<usize> {
     let mut rewritten = 0;
     for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
-        let path = entry.with_context(|| format!("read {}", dir.display()))?.path();
+        let path = entry
+            .with_context(|| format!("read {}", dir.display()))?
+            .path();
         if path.extension().is_none_or(|e| e != "xml") {
             continue;
         }

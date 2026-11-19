@@ -48,6 +48,17 @@ impl App {
                 self.refresh();
                 return vec![Effect::Wlan(on)];
             }
+            // The two checks the bootloader makes read from what the page
+            // last read, and each is asked for on its own: the answers come
+            // back through the runtime, which reads them again.
+            Action::Toggle(Switch::Verification) => {
+                let on = self.verified().map(|v| v.verification).unwrap_or(true);
+                return vec![Effect::SetVerification(!on)];
+            }
+            Action::Toggle(Switch::Verity) => {
+                let on = self.verified().map(|v| v.verity).unwrap_or(true);
+                return vec![Effect::SetVerity(!on)];
+            }
             Action::Toggle(switch) => {
                 let on = match switch {
                     Switch::Vibrate => &mut self.state.vibrate,
@@ -58,6 +69,9 @@ impl App {
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
                     Switch::ShowPassword => &mut self.state.show_password,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
+                    Switch::Verification | Switch::Verity => {
+                        unreachable!("the bootloader's checks are asked for above")
+                    }
                 };
                 *on = !*on;
                 let now_on = *on;

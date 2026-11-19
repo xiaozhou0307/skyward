@@ -527,6 +527,7 @@ pub fn map_snapshot(snaps: &Snapshots, md: &Metadata, devices: &[(u32, u32)], p:
             cow: devnum(&cow_dev)?,
             merge,
             overflow: reports_overflow(kind)?,
+            kept: true,
         };
         dm::create(&p.name, &[snapshot], false)
     })();
@@ -632,7 +633,7 @@ fn switch_to_merge(snaps: &Snapshots, name: &str) -> Result<(), FailureCode> {
     let (Some(base), Some(cow)) = (params.next(), params.next()) else { return Err(FailureCode::GetTableParams) };
     let (base, cow) = (parse_device(base).map_err(|_| FailureCode::GetTableParams)?, parse_device(cow).map_err(|_| FailureCode::GetTableParams)?);
     let overflow = reports_overflow("snapshot-merge").map_err(|_| FailureCode::ActivateNewTable)?;
-    let merging = dm::Target::Snapshot { sectors: line.sectors, base, cow, merge: true, overflow };
+    let merging = dm::Target::Snapshot { sectors: line.sectors, base, cow, merge: true, overflow, kept: true };
     dm::reload(name, &[merging], false).map_err(|_| FailureCode::ActivateNewTable)?;
     status.state = PartState::Merging as i32;
     if let Ok(Some((_, Ok(usage)))) = snapshot_target(name) {

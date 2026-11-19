@@ -69,6 +69,12 @@ mod tests {
     use super::*;
     use crate::app::testing::*;
 
+    /// The chip's name in the three languages the pages offer, as the
+    /// configuration writes it.
+    fn soc(hans: &str, hant: &str, en: &str) -> skyward_config::Names {
+        skyward_config::Names { hans: hans.into(), hant: hant.into(), en: en.into() }
+    }
+
     #[test]
     fn swiping_the_knob_reboots_to_the_chosen_target() {
         let (f, i) = (fonts(), info());
@@ -82,6 +88,24 @@ mod tests {
         let fx = app.touch(Touch::Up, &f, 0);
         assert_eq!(fx, vec![Effect::Reboot(Target::Bootloader)]);
         assert_eq!(app.state.confirm, 0.0, "the knob springs back");
+    }
+
+    #[test]
+    fn a_chip_without_an_emergency_download_mode_is_offered_no_way_to_it() {
+        let f = fonts();
+        let edl = Action::RebootTarget(4);
+        let rows = |chip: skyward_config::Names| {
+            let mut i = info();
+            i.soc = Some(chip);
+            let mut app = App::new(Screen::Reboot, W, H, PPD);
+            let fr = app.frame(&f, &i);
+            (fr.hits.iter().any(|h| h.action == edl), fr.hits.len())
+        };
+        let (has, medias) = rows(soc("天玑9400+", "天璣9400+", "Dimensity 9400+"));
+        assert!(!has, "a MediaTek chip has no Qualcomm emergency download mode to go to");
+        let (has, qualcomm) = rows(soc("骁龙8至尊版", "驍龍8至尊版", "Snapdragon 8 Elite"));
+        assert!(has, "a Qualcomm chip keeps the row it has a mode for");
+        assert_eq!(medias + 1, qualcomm, "one row fewer, and nothing else changed");
     }
 
     #[test]
@@ -141,3 +165,4 @@ mod tests {
         assert!(!app.display_on(), "with the light put out, power turns the panel off");
     }
 }
+

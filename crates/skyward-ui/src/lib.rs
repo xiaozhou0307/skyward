@@ -22,7 +22,10 @@ pub mod term;
 pub mod theme;
 pub mod widgets;
 
+pub mod flow;
+pub mod splash;
 pub use app::App;
+pub use app::Verified;
 pub use canvas::Canvas;
 pub use color::Rgba;
 pub use font::Fonts;

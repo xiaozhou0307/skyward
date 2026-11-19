@@ -29,6 +29,10 @@ pub enum Switch {
     Wlan,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
+    /// The bootloader's check of the vbmeta chain's signatures.
+    Verification,
+    /// The dm-verity hash trees over the system's partitions.
+    Verity,
 }
 
 /// How long the screen stays on with nothing touched, in milliseconds, in

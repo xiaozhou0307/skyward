@@ -72,7 +72,9 @@ impl Readings {
 
     /// Read the battery at once.
     pub fn ask(&self) {
-        self.asks.send(()).expect("the readings thread runs while its readings are taken");
+        self.asks
+            .send(())
+            .expect("the readings thread runs while its readings are taken");
     }
 
     /// The readings taken since the last call.

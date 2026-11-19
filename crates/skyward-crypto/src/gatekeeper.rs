@@ -69,10 +69,15 @@ fn note(read: &mut Reader) -> Result<Token> {
         });
     }
     let end = read.structure().context("read what the secure world said about the credential")?;
-    // Whether the credential is to be enrolled again, and how long to wait,
-    // which a right answer leaves at nothing.
-    read.i32().context("read how the secure world took the credential")?;
-    read.i32().context("read how long the secure world asks to wait")?;
+    // Binder success alone does not establish credential success: the HAL
+    // also reports its status inside GatekeeperVerifyResponse.
+    let result = read.i32().context("read how the secure world took the credential")?;
+    let timeout_ms = read.i32().context("read how long the secure world asks to wait")?;
+    match result {
+        RIGHT | RIGHT_BUT_RENEW => {}
+        RETRY_TIMEOUT => bail!("the phone is holding off further tries for {timeout_ms} milliseconds"),
+        _ => bail!("the secure world refused credential verification with response status {result}"),
+    }
     let note = written(read).context("read the note the secure world wrote")?;
     read.go(end)?;
     Ok(note)
@@ -261,6 +266,20 @@ mod tests {
             token,
             Token { challenge: 0, user: 0x253c_22c3_acbb_a741, authenticator: 9, kind: 1, when: 1_700_000_000, mac: vec![0xAB; 32] }
         );
+    }
+
+    #[test]
+    fn binder_success_still_requires_a_successful_hal_response() {
+        for (code, message) in [(-1_i32, "response status -1"), (-2, "holding off")] {
+            let mut reply = answered(&[]);
+            // Binder status (4), presence (4), parcelable size (4), HAL status.
+            reply[12..16].copy_from_slice(&code.to_le_bytes());
+            let error = note(&mut Reader::new(&reply)).unwrap_err();
+            assert!(format!("{error:#}").contains(message));
+        }
+        let mut reenroll = answered(&[0xAB; 32]);
+        reenroll[12..16].copy_from_slice(&1_i32.to_le_bytes());
+        assert!(note(&mut Reader::new(&reenroll)).is_ok());
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! that hold what is read are downloaded, each checked against the
 //! package's own sum of it.
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use fs_erofs::{FileType, Filesystem, Inode};
 use std::fs;
 use std::path::Path;
@@ -23,14 +23,23 @@ use unpayload::{ImageOptions, PartitionImage, Payload, ReadAt};
 /// service descriptions, each a folder taken whole, the accounts its
 /// scripts name, and the build's properties, which the vendor partition
 /// keeps at its top and the others under etc.
-const TAKEN: [&str; 6] = ["etc/init", "etc/vintf", "etc/passwd", "etc/group", "build.prop", "etc/build.prop"];
+const TAKEN: [&str; 6] = [
+    "etc/init",
+    "etc/vintf",
+    "etc/passwd",
+    "etc/group",
+    "build.prop",
+    "etc/build.prop",
+];
 
 /// A partition in the package, read where the filesystem asks for it.
 struct Partition(PartitionImage);
 
 impl fs_core::BlockRead for Partition {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
-        self.0.read_exact_at(buf, offset).map_err(fs_core::Error::Io)
+        self.0
+            .read_exact_at(buf, offset)
+            .map_err(fs_core::Error::Io)
     }
 
     fn size_bytes(&self) -> u64 {
@@ -57,15 +66,29 @@ pub fn take(package: &str, partitions: &[String], out: &Path) -> Result<()> {
     let mut read = Vec::new();
     for name in partitions {
         let to = out.join(name);
-        ensure!(!to.exists(), "{} is there already; take it away to write it afresh", to.display());
-        let image = payload.open_image(name, &ImageOptions::default()).with_context(|| format!("open the {name} partition of {package}"))?;
-        let filesystem = Filesystem::open(Arc::new(Partition(image))).with_context(|| format!("read the filesystem of the {name} partition"))?;
+        ensure!(
+            !to.exists(),
+            "{} is there already; take it away to write it afresh",
+            to.display()
+        );
+        let image = payload
+            .open_image(name, &ImageOptions::default())
+            .with_context(|| format!("open the {name} partition of {package}"))?;
+        let filesystem = Filesystem::open(Arc::new(Partition(image)))
+            .with_context(|| format!("read the filesystem of the {name} partition"))?;
         let mut written = 0;
         for path in TAKEN {
-            written += take_path(&filesystem, path, &to).with_context(|| format!("take /{path} out of the {name} partition"))?;
+            written += take_path(&filesystem, path, &to)
+                .with_context(|| format!("take /{path} out of the {name} partition"))?;
         }
-        ensure!(written > 0, "the {name} partition of {package} holds none of {TAKEN:?}");
-        println!("wrote {written} files of the {name} partition under {}", to.display());
+        ensure!(
+            written > 0,
+            "the {name} partition of {package} holds none of {TAKEN:?}"
+        );
+        println!(
+            "wrote {written} files of the {name} partition under {}",
+            to.display()
+        );
         read.push((name.as_str(), filesystem, to));
     }
     let mut named = Named::default();
@@ -73,27 +96,40 @@ pub fn take(package: &str, partitions: &[String], out: &Path) -> Result<()> {
         named.in_scripts(&to.join(SCRIPTS))?;
     }
     let on = |path: &str| -> Option<(&(&str, Filesystem, std::path::PathBuf), String)> {
-        let (top, within) = skyward_programs::phone::partition_of(read.iter().map(|(name, _, _)| *name), path)?;
-        Some((read.iter().find(|(name, _, _)| *name == top)?, within.to_string()))
+        let (top, within) =
+            skyward_programs::phone::partition_of(read.iter().map(|(name, _, _)| *name), path)?;
+        Some((
+            read.iter().find(|(name, _, _)| *name == top)?,
+            within.to_string(),
+        ))
     };
     for path in &named.put {
-        let Some(((name, filesystem, to), within)) = on(path) else { continue };
+        let Some(((name, filesystem, to), within)) = on(path) else {
+            continue;
+        };
         if to.join(&within).exists() {
             continue;
         }
-        if take_path(filesystem, &within, to).with_context(|| format!("take {path} out of the {name} partition"))? > 0 {
+        if take_path(filesystem, &within, to)
+            .with_context(|| format!("take {path} out of the {name} partition"))?
+            > 0
+        {
             println!("wrote {path}, which the phone puts in the place of another file");
         }
     }
     let mut carried = 0;
     for path in &named.programs {
-        let Some(((name, filesystem, to), within)) = on(path) else { continue };
+        let Some(((name, filesystem, to), within)) = on(path) else {
+            continue;
+        };
         match filesystem.lookup_path(&within) {
             Ok(_) => {}
             // A path through a link that leads off the partition is not
             // one the partition carries either.
             Err(fs_erofs::Error::NotFound | fs_erofs::Error::NotADirectory) => continue,
-            Err(e) => return Err(e).with_context(|| format!("look for {path} on the {name} partition")),
+            Err(e) => {
+                return Err(e).with_context(|| format!("look for {path} on the {name} partition"));
+            }
         }
         let at = to.join(&within);
         let folder = at.parent().context("a program is in a folder")?;
@@ -101,7 +137,10 @@ pub fn take(package: &str, partitions: &[String], out: &Path) -> Result<()> {
         fs::write(&at, b"").with_context(|| format!("write {}", at.display()))?;
         carried += 1;
     }
-    println!("wrote {carried} of the {} programs the scripts name as empty files: those their partitions carry", named.programs.len());
+    println!(
+        "wrote {carried} of the {} programs the scripts name as empty files: those their partitions carry",
+        named.programs.len()
+    );
     Ok(())
 }
 
@@ -138,12 +177,16 @@ impl Named {
             Err(e) => return Err(e).with_context(|| format!("list {}", folder.display())),
         };
         for entry in listing {
-            let path = entry.with_context(|| format!("list {}", folder.display()))?.path();
+            let path = entry
+                .with_context(|| format!("list {}", folder.display()))?
+                .path();
             if path.is_dir() {
                 self.in_scripts(&path)?;
             } else if path.extension().is_some_and(|e| e == "rc") {
-                let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-                let script = skyward_programs::script::read(&text).with_context(|| format!("read {}", path.display()))?;
+                let text = fs::read_to_string(&path)
+                    .with_context(|| format!("read {}", path.display()))?;
+                let script = skyward_programs::script::read(&text)
+                    .with_context(|| format!("read {}", path.display()))?;
                 for command in script.actions.iter().flat_map(|a| &a.commands) {
                     if let [mount, _, from, _, options @ ..] = &command[..]
                         && mount == "mount"
@@ -173,8 +216,12 @@ fn copy(filesystem: &Filesystem, inode: &Inode, to: &Path) -> Result<usize> {
         FileType::RegularFile => {
             let size = usize::try_from(inode.size).context("a file too large to hold")?;
             let mut data = vec![0u8; size];
-            filesystem.read_file(inode, 0, &mut data).context("read it")?;
-            let parent = to.parent().context("what is taken out goes into a folder")?;
+            filesystem
+                .read_file(inode, 0, &mut data)
+                .context("read it")?;
+            let parent = to
+                .parent()
+                .context("what is taken out goes into a folder")?;
             fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
             fs::write(to, data).with_context(|| format!("write {}", to.display()))?;
             Ok(1)
@@ -186,12 +233,23 @@ fn copy(filesystem: &Filesystem, inode: &Inode, to: &Path) -> Result<usize> {
                 if entry.name == b"." || entry.name == b".." {
                     continue;
                 }
-                let name = std::str::from_utf8(&entry.name).with_context(|| format!("a name that is not text: {:?}", String::from_utf8_lossy(&entry.name)))?;
-                let child = filesystem.read_inode(entry.nid).with_context(|| format!("read {name}"))?;
-                written += copy(filesystem, &child, &to.join(name)).with_context(|| format!("in {name}"))?;
+                let name = std::str::from_utf8(&entry.name).with_context(|| {
+                    format!(
+                        "a name that is not text: {:?}",
+                        String::from_utf8_lossy(&entry.name)
+                    )
+                })?;
+                let child = filesystem
+                    .read_inode(entry.nid)
+                    .with_context(|| format!("read {name}"))?;
+                written += copy(filesystem, &child, &to.join(name))
+                    .with_context(|| format!("in {name}"))?;
             }
             Ok(written)
         }
-        other => bail!("{} is a {other:?}, neither a file nor a folder", to.display()),
+        other => bail!(
+            "{} is a {other:?}, neither a file nor a folder",
+            to.display()
+        ),
     }
 }
